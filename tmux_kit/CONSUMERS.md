@@ -4,11 +4,9 @@
 other apps can manage tmux sessions the way muxplex does — **without forking that
 code**. Fixes flow both ways: a change to `tmux-kit` reaches every consumer.
 
-> **Status (2026-08-08):** `tmux-kit` currently lives inside the muxplex repo as a
-> uv workspace member at `lib/`, version **0.44.0**, held at **0.x with no semver
-> promise**. It is moving to its own public repo (`bkrabach/tmux-kit`) and PyPI;
-> until then, depend on it via the git subdirectory form below. This file travels
-> with the package to its new home.
+> **Status:** `tmux-kit` now lives in its own public repo (`bkrabach/tmux-kit`),
+> held at **0.x with no semver promise**. This file travelled with the package
+> from the muxplex monorepo to this, its new home.
 >
 > **Naming:** the PyPI distribution and repo are `tmux-kit` (hyphen); the Python
 > import package is `tmux_kit` (underscore) — hyphens are illegal in Python
@@ -17,25 +15,25 @@ code**. Fixes flow both ways: a change to `tmux-kit` reaches every consumer.
 
 ## How to depend on it
 
-**Today (from the muxplex repo subdirectory):**
+**Public installs (primary path, resolves from PyPI):**
 ```toml
-dependencies = [
-  "tmux-kit @ git+https://github.com/bkrabach/muxplex.git@v0.44.0#subdirectory=lib",
-]
+dependencies = ["tmux-kit==0.1.0"]      # applications pin exact; 0.x has no semver promise
 ```
 
-**After the repo split (PyPI + git+https):**
+**Pinned git install** (managed/locked environments that cannot reach public
+PyPI — see muxplex's own `docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md`
+§2.3 for the three-shape install runbook this pattern comes from):
 ```toml
-dependencies = ["tmux-kit>=0.1.0"]      # public installs resolve from PyPI
-# For a pinned git install (e.g. locked/managed environments):
-#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit.git@v0.1.0
+dependencies = [
+  "tmux-kit @ git+https://github.com/bkrabach/tmux-kit.git@v0.1.0",
+]
 ```
 
 **Never copy `tmux_kit` source into your app.** A byte-similar copy IS the drift
 incident the extraction exists to prevent. Need a change? Open a PR against the
 `tmux-kit` repo — never a fork.
 
-## The public surface (as shipped in 0.44.0)
+## The public surface (as shipped in 0.1.0)
 
 Stdlib-only. Importing `tmux_kit` pulls in NO web server, no fastapi, no pam
 (enforced by a smoke test).

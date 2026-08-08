@@ -1,14 +1,18 @@
 # tmux-kit
 
 Async, argv-exec tmux session-management primitives, extracted from
-[muxplex](https://github.com/bkrabach/muxplex) (design:
-`docs/plans/2026-08-08-tmux-lib-extraction-plan.md`; rename:
-`docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md`).
+[muxplex](https://github.com/bkrabach/muxplex) (extraction design:
+`docs/plans/2026-08-08-tmux-lib-extraction-plan.md`; the move to this
+repo + PyPI: `docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md` --
+both live in the muxplex repo, which remains the archaeological record for
+this library's pre-2026-08-08 history).
 
-Named for tmux, not for muxplex (plan §4.4): this is a library about a tmux
-server, usable by any application that manages tmux sessions. muxplex is its
-first consumer, as a uv workspace member of the same repo — one repo, one
-commit, one version, one rollout (§14.2).
+Named for tmux, not for muxplex: this is a library about a tmux server,
+usable by any application that manages tmux sessions. muxplex is its first
+consumer. Since the split, each project has its own repo, its own version
+line, and its own release cadence -- muxplex pins an exact `tmux-kit==`
+version and bumps it deliberately (see the pyproject.toml note in this
+repo, and the muxplex repo's own dependency declaration).
 
 **stdlib only.** No fastapi, no httpx, no server code. Configuration is
 injected, never read (§4.3): no function in this package knows that a
@@ -38,29 +42,48 @@ and session-name collisions.
 
 ## Versioning
 
-Lockstep with the repo tag, 0.x semantics (§14.5), until the move to its own
-repo and PyPI distribution (`tmux-kit`) lands. Consume it today as a git
-dependency pinned to a tag — note the PyPI distribution name uses a hyphen
-(`tmux-kit`) while the Python import package uses an underscore
-(`tmux_kit`), because hyphens are illegal in Python identifiers:
+0.x semantics — no semver promise yet. First release is `0.1.0` (the
+0.44.0 numbering used inside the muxplex monorepo was a pin-repair
+artifact that the rename to `tmux-kit` voided; see
+`docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md` §4 in the
+muxplex repo for the full reasoning). Note the PyPI distribution name
+uses a hyphen (`tmux-kit`) while the Python import package uses an
+underscore (`tmux_kit`), because hyphens are illegal in Python
+identifiers (cf. `python-dateutil` -> `dateutil`):
 
 ```toml
-dependencies = [
-    "tmux-kit @ git+https://github.com/bkrabach/muxplex.git@v0.44.0#subdirectory=lib",
-]
+# Public installs (primary path):
+dependencies = ["tmux-kit==0.1.0"]
+
+# Pinned git install (e.g. a managed environment that cannot reach
+# public PyPI -- see CONSUMERS.md):
+#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.1.0
 ```
 
 ```python
 import tmux_kit
 ```
 
-Improvements flow both ways as PRs against this repo's `lib/` — never a
-copy (§14.3: a file in a consumer that is byte-similar to a `lib/` file is
-the incident, regardless of intent).
+Improvements flow both ways as PRs against this repo — never a copy into a
+consumer (a file in a consumer that is byte-similar to a file here is the
+incident this whole extraction exists to prevent, regardless of intent).
 
 ## Tests
 
-The library's tests — every incident test that moved with its code — live in
-`muxplex/tests/` in this repo, under the suite's autouse safety rails, and
-run with the repo's normal `make test` flow. The differential harness
-(`pytest -m differential`) is retained as the regression bed.
+This repo's own `tests/` directory carries every incident test that moved
+with the code (the 44/52-lost-session presence rule, the multi-window bell
+finding, the `.`->`_` mangling refusal, the casefold+fnmatchcase allowlist
+fence, the cgroup-escape guards), plus the differential harness
+(`pytest -m differential`, replayed against fleet-recorded real-tmux data)
+and a real-tmux integration suite (`pytest -m integration`, isolated `-L`
+socket). Run the full suite locally:
+
+```
+uv sync --extra dev
+uv run pytest
+```
+
+CI (`.github/workflows/test.yml`) runs the full suite -- including
+`-m integration` and `-m differential` unconditionally, since a CI runner
+has no live muxplex to endanger -- on Python 3.11/3.12/3.13, Linux and
+macOS.
