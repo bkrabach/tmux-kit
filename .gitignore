@@ -6,3 +6,8 @@ __pycache__/
 dist/
 build/
 .venv/
+# This single-project repo deliberately does not commit a lockfile (see
+# the CI workflow's own "no uv.lock exists in this repo" comment) --
+# `uv sync` resolves fresh each time, matching a library's usual posture
+# of not pinning its own dev-dependency graph for contributors.
+uv.lock

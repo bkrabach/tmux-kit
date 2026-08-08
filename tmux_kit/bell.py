@@ -19,7 +19,16 @@ command, scheme, port -- ``main.py``'s ``_bell_hook_curl()``), the
 
 from __future__ import annotations
 
+import asyncio
+
 from tmux_kit.proc import run_tmux
+
+# Default interval between poll_bell_flag() calls inside wait_for_bell().
+# tmux's own flag doesn't push -- there is no notification primitive here,
+# only a value to re-read -- so *some* poll interval is unavoidable. 0.5s
+# balances "an agent waiting for a y/n prompt notices promptly" against
+# "don't spin a tmux subprocess ten times a second while idle".
+DEFAULT_BELL_POLL_INTERVAL = 0.5
 
 
 async def poll_bell_flag(session_name: str) -> bool:
@@ -52,6 +61,49 @@ async def poll_bell_flag(session_name: str) -> bool:
         return "1" in output.split()
     except RuntimeError:
         return False
+
+
+async def wait_for_bell(
+    session_name: str,
+    *,
+    timeout: float | None = None,
+    poll_interval: float = DEFAULT_BELL_POLL_INTERVAL,
+) -> bool:
+    """Block until *session_name* rings its bell, or *timeout* seconds pass.
+
+    ``poll_bell_flag()`` answers "has it rung" for one instant; an agent
+    that needs "wait until it rings" (e.g. a program that stops to ask
+    ``[y/n]`` and rings the bell doing so) had no way to express that
+    without hand-rolling its own poll loop -- a real capability gap, not a
+    style preference (each such loop is one more place to get the interval,
+    the tmux call, or the error handling subtly wrong).
+
+    Returns:
+        True as soon as ``poll_bell_flag()`` reports the bell has rung.
+        False if *timeout* elapses first (``timeout=None``, the default,
+        waits forever -- the caller is expected to bound this with
+        ``asyncio.wait_for()`` or its own cancellation if an outer bound is
+        needed instead).
+
+    Reading the flag does NOT clear it (same as ``poll_bell_flag()``), so a
+    caller that wants to detect the *next* bell after this one returns must
+    clear it itself (e.g. by re-attaching, or via whatever the consuming
+    application uses to mark a session "seen") -- this function only
+    reports presence, matching ``poll_bell_flag()``'s existing contract
+    exactly.
+    """
+    loop_deadline = (
+        None if timeout is None else asyncio.get_event_loop().time() + timeout
+    )
+    while True:
+        if await poll_bell_flag(session_name):
+            return True
+        if (
+            loop_deadline is not None
+            and asyncio.get_event_loop().time() >= loop_deadline
+        ):
+            return False
+        await asyncio.sleep(poll_interval)
 
 
 def build_alert_bell_hook(command: str) -> str:

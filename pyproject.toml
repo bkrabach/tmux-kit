@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tmux-kit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Async, argv-exec tmux session-management primitives (spawn, observe, presence, bells, cgroup escape)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,32 +25,58 @@ requires-python = ">=3.11"
 dependencies = []
 
 # NOTE: dependencies is EMPTY and must stay that way -- this library is
-# stdlib-only by contract (docs/plans/2026-08-08-tmux-lib-extraction-plan.md
-# SS4.4, SS14.1). A second application imports it precisely because it does
-# NOT drag in fastapi/uvicorn/python-pam/httpx or the muxplex server package
-# (the failure client/pyproject.toml's no-server-dep note exists to prevent,
-# applied in the other direction). muxplex/tests/test_lib_import_smoke.py
-# enforces this at import time; the workspace pyproject's import-purity rail
-# (muxplex/tests/test_safety_rails.py) enforces it at the AST level.
+# stdlib-only by contract. A second application imports it precisely
+# because it does NOT drag in fastapi/uvicorn/python-pam/httpx or any
+# server stack. tests/test_import_smoke.py enforces this at import time
+# (a fresh-interpreter import + installed-metadata check);
+# tests/test_rails.py's import-purity rail enforces it at the AST level
+# over the CORE modules (proc/spawn/names/observe/presence/bell/keys/
+# cgroup/lifecycle/api) -- the optional `cli`/`mcp` extras below are
+# deliberately carved OUT of that scan (see test_rails.py's docstring) so
+# they may depend on click/mcp without touching the base contract.
 #
-# NOTE: version is LOCKSTEP with the repo tag (SS14.5, the client/ precedent:
-# 0.43.0 = 0.43.0). Bump it together with pyproject.toml and
-# client/pyproject.toml on every release. 0.x semantics -- no semver promise
-# until the plan's stage 6 freeze, which has not happened.
+# NOTE: version is coordinated with muxplex's `tmux-kit==` pin (see
+# AGENTS.md's "Versioning is lockstep with muxplex"), NOT with a
+# `client/pyproject.toml` -- that file lives in the muxplex repo, not
+# here. This repo's own tag (`vX.Y.Z`) must match this version exactly.
 #
-# NOTE: NOT published to PyPI (plan scope: the lib rides muxplex's git-based
-# install; .github/workflows/publish.yml deliberately builds only muxplex and
-# muxplex-client). The name is therefore rename-safe.
+# NOTE: published to PyPI as `tmux-kit` via Trusted Publishing
+# (.github/workflows/publish.yml, triggered on `v*` tags) -- see
+# CONSUMERS.md for the public install shape and the pinned-git fallback
+# for managed environments that cannot reach public PyPI.
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
+# Optional extra: the Click CLI (tmux_kit.cli). NOT part of the base,
+# stdlib-only package -- install `tmux-kit[cli]` to get a working
+# `tmux-kit` console script.
+cli = [
+    "click>=8.1",
+]
+# Optional extra: the MCP (stdio) server (tmux_kit.mcp_server). Same
+# story as `cli` -- the base package stays zero-dep. Pinned below 2.0:
+# verified live that `mcp==2.0.0` removed `mcp.server.fastmcp.FastMCP`
+# (renamed/restructured to `mcp.server.mcpserver.MCPServer`) -- an
+# unconstrained `mcp>=1.2` resolves 2.0.0 today and breaks this extra at
+# import time. Revisit this pin (and tmux_kit/mcp_server.py) deliberately
+# if/when migrating to the 2.x API.
+mcp = [
+    "mcp>=1.2,<2",
+]
 
 [project.urls]
 Repository = "https://github.com/bkrabach/tmux-kit"
 Issues = "https://github.com/bkrabach/tmux-kit/issues"
+
+[project.scripts]
+# Only functional when the `cli` extra is installed (`pip install
+# 'tmux-kit[cli]'`) -- without it, this console script exists but fails
+# with a clear ImportError-derived message pointing at the extra (see
+# tmux_kit/cli.py's top-of-file guard).
+tmux-kit = "tmux_kit.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tmux_kit"]

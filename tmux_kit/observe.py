@@ -454,6 +454,46 @@ async def capture_pane_window(
     return int(h_str.strip()), int(p_str.strip()), int(l_str.strip()), text
 
 
+# ---------------------------------------------------------------------------
+# "Is it done, or still going?" (0.2.0 -- a real capability gap: nothing in
+# the 0.1.0 surface could answer this without a consumer inventing their own
+# tmux incantation).
+# ---------------------------------------------------------------------------
+
+
+async def pane_is_dead(session_name: str) -> bool:
+    """Return True if *session_name*'s active pane's foreground command has
+    exited (tmux's own ``#{pane_dead}`` flag), False otherwise -- including
+    when the session doesn't exist or tmux is unreachable.
+
+    This is a real tmux-native fact, not a guess: tmux sets ``pane_dead``
+    the instant the process running in a pane exits, independent of whether
+    the pane/window/session itself is then destroyed. By default
+    (``remain-on-exit off``, tmux's factory default) a dead pane is torn
+    down immediately -- if it was the session's last pane, the session
+    disappears with it, so the common case is simply "the session vanished,
+    ``enumerate_sessions()`` no longer lists it". But a caller (or a
+    consumer's own template) may set ``remain-on-exit on`` specifically to
+    let something else inspect the command's final output/exit status
+    before cleanup -- in that case the session is still enumerable, its
+    pane sitting there dead, and *this* is the only way to tell "the job
+    finished" apart from "the job is still running", since the session's
+    mere existence conflates both.
+
+    Returns False (not "unknown") on any error, matching the "unknown, not
+    dead" convention this module already applies to
+    ``probe_tmux_epoch()``/``enumerate_sessions()``: absence of evidence
+    that the pane died must never be reported as evidence that it died.
+    """
+    try:
+        output = await run_tmux(
+            "display-message", "-p", "-t", session_name, "#{pane_dead}"
+        )
+    except (RuntimeError, FileNotFoundError):
+        return False
+    return output.strip() == "1"
+
+
 async def snapshot_all(names: list[str]) -> dict[str, str]:
     """Capture all sessions concurrently and return a name→text mapping.
 

@@ -47,6 +47,62 @@ jobs:
       - name: Run full suite (unit + integration + differential)
         run: uv run pytest -v
 
+  test-extras:
+    # The optional `cli` (Click) and `mcp` (MCP SDK) surfaces are scoped
+    # OUT of the base package's zero-dep contract (see AGENTS.md), so the
+    # main `test` job above deliberately does NOT install them -- that job
+    # proves the base package stays stdlib-only even when these tests are
+    # skipped (pytest.importorskip in tests/test_cli.py / test_mcp_server.py).
+    # This job installs both extras and proves they actually work, on top
+    # of the full core suite (which must stay green with the extras
+    # installed too -- no cross-contamination).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Set up Python
+        run: uv python install "3.12"
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Install dependencies (dev + cli + mcp extras)
+        run: uv sync --extra dev --extra cli --extra mcp
+
+      - name: Run full suite with extras installed
+        run: uv run pytest -v
+
+      - name: Smoke-test the tmux-kit console script
+        run: uv run tmux-kit --help
+
+      - name: Smoke-test the MCP server's tool registration
+        run: |
+          uv run python -c "
+          import asyncio
+          from tmux_kit import mcp_server
+
+          async def main():
+              tools = await mcp_server.mcp.list_tools()
+              names = {t.name for t in tools}
+              expected = {
+                  'start', 'list_sessions', 'status', 'read', 'page',
+                  'search', 'wait_for_attention', 'stop', 'kill', 'rename',
+                  'doctor',
+              }
+              missing = expected - names
+              assert not missing, f'MCP server missing tools: {missing}'
+              print(f'OK -- {len(names)} tools registered')
+
+          asyncio.run(main())
+          "
+
   test-macos:
     # The sun-path budget (ttyd's SUN_PATH_BUDGET-adjacent concerns) and
     # `#{pane_current_path}` behaviors this library relies on are

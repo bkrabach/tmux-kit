@@ -43,11 +43,22 @@ repo carries the incident narratives):
   errors across 53 live sessions. Never add a second `run-shell` construction
   site; extend `build_alert_bell_hook()`'s single call site instead.
 - **Import purity.** `test_library_is_import_pure_stdlib_and_self_only` AST-
-  scans every module under `tmux_kit/` and fails if anything imports outside
-  stdlib + `tmux_kit.*`. This is the mechanical enforcement of the
-  `dependencies = []` contract above — it catches an import that a metadata
-  check alone would miss (e.g. an accidental `import requests` that happens
-  to be present in the dev environment).
+  scans every CORE module under `tmux_kit/` (everything except the optional
+  `cli.py`/`mcp_server.py` extras -- see below) and fails if anything
+  imports outside stdlib + `tmux_kit.*`. This is the mechanical enforcement
+  of the `dependencies = []` contract above — it catches an import that a
+  metadata check alone would miss (e.g. an accidental `import requests`
+  that happens to be present in the dev environment).
+- **Optional extras (0.2.0): `tmux_kit/cli.py` (Click) and
+  `tmux_kit/mcp_server.py` (the `mcp` SDK).** Each depends on exactly one
+  third-party package, declared in `pyproject.toml`'s `cli`/`mcp` extras,
+  and is scoped OUT of the core import-purity scan above -- but each has
+  its OWN, narrower rail (`test_cli_extra_imports_only_click_stdlib_and_tmux_kit`,
+  `test_mcp_extra_imports_only_mcp_stdlib_and_tmux_kit`) asserting it
+  imports nothing beyond stdlib + `tmux_kit.*` + its one named package.
+  Adding a THIRD extra means adding it to `test_rails.py`'s `_EXTRA_MODULES`
+  with its own scoped rail -- never widening the core scan or an existing
+  extra's allowed import to cover it.
 - `test_no_test_modules_inside_the_library_package` keeps tests out of the
   shipped package (`tmux_kit/`) so a consumer's install stays lean.
 

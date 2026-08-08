@@ -27,19 +27,34 @@ import json
 import subprocess
 import sys
 
-# The §15.1 public surface AS BUILT at S3. The plan's full §15.1 listing
-# also names manifest I/O (load_manifest/save_manifest), the
-# Sender/SendPolicy send API, a TmuxError exception type (§15.3 open
+# The §15.1 public surface AS BUILT at S3, extended at 0.2.0 with the
+# facade (`tmux_kit.api`, re-exported at the top level) and `lifecycle`.
+# The plan's full §15.1 listing also names manifest I/O
+# (load_manifest/save_manifest), a TmuxError exception type (§15.3 open
 # decision #1 -- run_tmux raises RuntimeError today), a TmuxTarget config
-# object, `rename_session` (spelled `rename_tmux_session` as built), and
-# (second tranche, §16) the ttyd AF_UNIX lifecycle -- none of which live in
-# the library yet (see lib/tmux_kit/__init__.py's "what does NOT live
-# here"). Imports below are the shipped surface; extend this list as later
-# stages land those pieces.
+# object, and (second tranche, §16) the ttyd AF_UNIX lifecycle -- none of
+# which live in the library yet (see tmux_kit/__init__.py's "what does NOT
+# live here"). The Sender/SendPolicy typed send-API is likewise still
+# unbuilt (0.2.0 added raw execute-side primitives -- `lifecycle` -- but
+# not the policy object; see CONSUMERS.md). Imports below are the shipped
+# surface; extend this list as later stages land those pieces.
+#
+# Deliberately includes a BARE `import tmux_kit` (not just submodule
+# imports): the facade's __init__.py now re-exports `tmux_kit.api`'s verbs
+# at the top level, so this is what proves THAT import path is equally
+# server-free -- not just the low-level submodules.
 _SURFACE_PROGRAM = """
 import tmux_kit
-from tmux_kit.proc import run_tmux, set_env_factory, tmux_env
+from tmux_kit.proc import (
+    UNSET,
+    default_env,
+    get_env_factory,
+    run_tmux,
+    set_env_factory,
+    tmux_env,
+)
 from tmux_kit.spawn import spawn_session
+from tmux_kit.lifecycle import interrupt_session, kill_session
 from tmux_kit.names import (
     SESSION_NAME_RE,
     is_tmux_stable_name,
@@ -53,6 +68,7 @@ from tmux_kit.observe import (
     capture_pane_metadata,
     capture_pane_window,
     enumerate_sessions,
+    pane_is_dead,
     probe_tmux_epoch,
     snapshot_all,
 )
@@ -62,9 +78,34 @@ from tmux_kit.presence import (
     mark_restored,
     update_manifest,
 )
-from tmux_kit.bell import build_alert_bell_hook, poll_bell_flag
+from tmux_kit.bell import (
+    DEFAULT_BELL_POLL_INTERVAL,
+    build_alert_bell_hook,
+    poll_bell_flag,
+    wait_for_bell,
+)
 from tmux_kit.keys import ALLOWED_KEYS, MAX_KEYS, MAX_TEXT_BYTES
 from tmux_kit.cgroup import should_escape, wrap_exec_argv, wrap_shell_argv
+from tmux_kit.api import (
+    DoctorReport,
+    PageResult,
+    SearchResult,
+    SessionInfo,
+    configure,
+    default_socket_dir,
+    doctor,
+    is_running,
+    kill,
+    list_sessions,
+    page,
+    read,
+    rename,
+    search,
+    start,
+    status,
+    stop,
+    wait_for_attention,
+)
 
 import json
 import sys

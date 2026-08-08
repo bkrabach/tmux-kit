@@ -15,6 +15,18 @@ keeps its own half, scoped to what it actually owns:
   import-purity rail (no module under ``tmux_kit/`` may import anything
   outside stdlib + ``tmux_kit.*`` -- plan §3.2's "simplest test").
 
+0.2.0 update: the import-purity rail is now scoped to the CORE primitives
+(``proc``/``spawn``/``names``/``observe``/``presence``/``bell``/``keys``/
+``cgroup``/``lifecycle``/``api``/``__init__``) -- ``tmux_kit/cli.py`` and
+``tmux_kit/mcp_server.py`` are optional EXTRAS (pyproject.toml's `cli`/
+`mcp` extras) that legitimately depend on ``click``/``mcp`` respectively.
+This is a NARROWING of scope, not a weakening of protection: each extra
+gets its OWN rail immediately below, asserting it imports nothing beyond
+stdlib + ``tmux_kit.*`` + its one named third-party package. The
+stdlib-only, zero-runtime-dep contract for the BASE package (`import
+tmux_kit`) is exactly as strict as before -- see AGENTS.md's "dependencies
+= [] is load-bearing" section.
+
 If you are here because one of these failed: the rail is not ceremony --
 each one maps to real production damage that already happened once
 (see muxplex's AGENTS.md, "never render to a pane" / the 2026-07 curl
@@ -83,17 +95,38 @@ def test_exactly_one_run_shell_construction_site_exists():
     )
 
 
-def _import_purity_offenders() -> list[str]:
-    """AST scan of every ``.py`` under ``tmux_kit/`` for imports that
-    reach outside stdlib + ``tmux_kit.*``.
+# Modules in this package that are OPTIONAL EXTRAS, not part of the
+# stdlib-only base package (see pyproject.toml's `cli`/`mcp` extras and
+# AGENTS.md). Each is scoped OUT of the core import-purity scan below and
+# given its OWN, narrower rail immediately after it.
+_EXTRA_MODULES: dict[str, str] = {
+    "cli.py": "click",
+    "mcp_server.py": "mcp",
+}
+
+
+def _core_python_files() -> list[Path]:
+    """Every ``.py`` under ``tmux_kit/`` EXCEPT the optional-extra modules
+    in ``_EXTRA_MODULES`` (which get their own, separately-scoped rail).
+    """
+    return [p for p in sorted(_LIB_DIR.rglob("*.py")) if p.name not in _EXTRA_MODULES]
+
+
+def _import_purity_offenders(
+    paths: list[Path] | None = None, *, extra_allowed: str | None = None
+) -> list[str]:
+    """AST scan of *paths* (default: the core modules -- see
+    ``_core_python_files()``) for imports that reach outside stdlib +
+    ``tmux_kit.*`` (+ *extra_allowed*, one additional permitted top-level
+    package, for an extras-scoped call).
 
     Three shapes are offenses:
-    - ``from <non-stdlib, non-tmux_kit> import ...`` (absolute ImportFrom)
-    - ``import <non-stdlib, non-tmux_kit>`` (plain Import)
+    - ``from <disallowed> import ...`` (absolute ImportFrom)
+    - ``import <disallowed>`` (plain Import)
     - a RELATIVE import whose level climbs OUT of the ``tmux_kit/`` package
     """
     offenders: list[str] = []
-    for path in sorted(_LIB_DIR.rglob("*.py")):
+    for path in paths if paths is not None else _core_python_files():
         rel_parts = path.relative_to(_LIB_DIR).parts
         rel = "tmux_kit/" + "/".join(rel_parts)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -102,7 +135,11 @@ def _import_purity_offenders() -> list[str]:
                 if node.level == 0:
                     mod = node.module or ""
                     root = mod.split(".")[0]
-                    if root != "tmux_kit" and root not in _STDLIB_MODULES:
+                    if (
+                        root != "tmux_kit"
+                        and root not in _STDLIB_MODULES
+                        and root != extra_allowed
+                    ):
                         offenders.append(f"{rel}:{node.lineno}: from {mod} import ...")
                 elif node.level >= len(rel_parts) + 1:
                     offenders.append(
@@ -112,15 +149,20 @@ def _import_purity_offenders() -> list[str]:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     root = alias.name.split(".")[0]
-                    if root != "tmux_kit" and root not in _STDLIB_MODULES:
+                    if (
+                        root != "tmux_kit"
+                        and root not in _STDLIB_MODULES
+                        and root != extra_allowed
+                    ):
                         offenders.append(f"{rel}:{node.lineno}: import {alias.name}")
     return offenders
 
 
 def test_library_is_import_pure_stdlib_and_self_only():
-    """No module under ``tmux_kit/`` imports anything outside stdlib +
+    """No CORE module under ``tmux_kit/`` imports anything outside stdlib +
     ``tmux_kit.*`` (plan §3.2 -- "the import-purity rail becomes
-    tmux-kit's simplest test").
+    tmux-kit's simplest test"; 0.2.0 -- scoped to exclude the optional
+    ``cli``/``mcp`` extras, each of which has its own rail below).
 
     This is the AST-level counterpart to ``test_import_smoke.py``'s
     runtime check (a fresh-interpreter import that inspects
@@ -129,10 +171,45 @@ def test_library_is_import_pure_stdlib_and_self_only():
     """
     offenders = _import_purity_offenders()
     assert not offenders, (
-        f"tmux_kit/ (stdlib-only by contract) imports something outside "
-        f"stdlib + tmux_kit.*: {offenders}. This library must stay importable "
-        f"by a consumer with ZERO extra runtime weight -- config/deps are "
-        f"INJECTED by the caller, never read here."
+        f"tmux_kit/'s core (stdlib-only by contract) imports something "
+        f"outside stdlib + tmux_kit.*: {offenders}. This library must stay "
+        f"importable by a consumer with ZERO extra runtime weight -- "
+        f"config/deps are INJECTED by the caller, never read here. (If this "
+        f"is a legitimate new optional-extra module, add it to "
+        f"_EXTRA_MODULES with its own scoped rail -- do not weaken this one.)"
+    )
+
+
+def test_cli_extra_imports_only_click_stdlib_and_tmux_kit():
+    """``tmux_kit/cli.py`` (the `cli` extra) may import stdlib +
+    ``tmux_kit.*`` + ``click`` -- nothing else. This is the CLI's own
+    narrow carve-out from the core import-purity rail above, not a
+    loosening of it: the base package still drags in zero third-party
+    weight, and the CLI extra is honest about the one dependency it adds.
+    """
+    path = _LIB_DIR / "cli.py"
+    assert path.is_file(), f"expected {path} to exist"
+    offenders = _import_purity_offenders([path], extra_allowed="click")
+    assert not offenders, (
+        f"tmux_kit/cli.py imports something outside stdlib + tmux_kit.* + "
+        f"click: {offenders}. The `cli` extra's pyproject.toml dependency "
+        f"list is `click` only -- an unlisted import here would install-fail "
+        f"or silently work by dev-environment accident."
+    )
+
+
+def test_mcp_extra_imports_only_mcp_stdlib_and_tmux_kit():
+    """``tmux_kit/mcp_server.py`` (the `mcp` extra) may import stdlib +
+    ``tmux_kit.*`` + ``mcp`` -- nothing else. Same rationale as the CLI's
+    rail immediately above.
+    """
+    path = _LIB_DIR / "mcp_server.py"
+    assert path.is_file(), f"expected {path} to exist"
+    offenders = _import_purity_offenders([path], extra_allowed="mcp")
+    assert not offenders, (
+        f"tmux_kit/mcp_server.py imports something outside stdlib + "
+        f"tmux_kit.* + mcp: {offenders}. The `mcp` extra's pyproject.toml "
+        f"dependency list is `mcp` only."
     )
 
 

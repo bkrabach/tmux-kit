@@ -33,21 +33,36 @@ dependencies = [
 incident the extraction exists to prevent. Need a change? Open a PR against the
 `tmux-kit` repo — never a fork.
 
-## The public surface (as shipped in 0.1.0)
+## The public surface (as shipped in 0.2.0) -- THE canonical enumeration
 
-Stdlib-only. Importing `tmux_kit` pulls in NO web server, no fastapi, no pam
-(enforced by a smoke test).
+Stdlib-only (this table). Importing `tmux_kit` pulls in NO web server, no
+fastapi, no pam (enforced by a smoke test). This table is the ONE
+hand-maintained enumeration of every module's exports -- the README used
+to carry a second, independent copy; that second copy drifted (it named a
+`names.rename_session` that never existed) and shipped a first-run
+`ImportError` to a reader who copied it. Don't re-add a second copy; point
+at this one instead.
 
 | Module | What it gives you |
 |--------|-------------------|
-| `tmux_kit.proc` | `run_tmux()`, `tmux_env()`, `set_env_factory()`. **Config is injected, never read** — you install an env factory at startup; the lib never reads your settings file. |
-| `tmux_kit.observe` | `enumerate_sessions()`, `probe_tmux_epoch()`, `capture_pane()` / `_metadata` / `_window`, session caches + getters (`get_session_cwds()`, ...). Scrollback paging via absolute-line params. |
+| `tmux_kit.proc` | `run_tmux()`, `tmux_env(socket_dir)`, `set_env_factory()`, `get_env_factory()`, `default_env()`, `UNSET` (the shared omitted-arg sentinel). **Config is injected, never read** — you install an env factory at startup; the lib never reads your settings file. |
+| `tmux_kit.observe` | `enumerate_sessions()`, `probe_tmux_epoch()`, `capture_pane()` / `_metadata` / `_window`, `pane_is_dead()` (0.2.0 — "is it done, or still going?"), session caches + getters (`get_session_cwds()`, ...), `snapshot_all()`. Scrollback paging via absolute-line params (`capture_pane_metadata` + `capture_pane_window`). |
 | `tmux_kit.names` | `is_valid_session_name()`, `is_tmux_stable_name()`, `rename_tmux_session()`, `SESSION_NAME_RE`. |
 | `tmux_kit.presence` | `update_manifest()`, `compute_restore_plan()`, `mark_restored()`. Owns the core presence keys; **your app writes its own keys beside them, in its own state dir** — unknown top-level keys round-trip verbatim (contract-tested). |
-| `tmux_kit.bell` | `poll_bell_flag()`, `build_alert_bell_hook()`. |
-| `tmux_kit.keys` | send-input argv builders + the permission fence (`input_allowed_for_session()`, `session_matches_allowlist()`, `redact_preview()`). |
-| `tmux_kit.spawn` | `spawn_session(name, template, *, env)` — caller resolves the template. |
-| `tmux_kit.cgroup` | `should_escape()`, `wrap_exec_argv()`, `environment_mode()` — the systemd `--scope` escape that keeps sessions alive past the launching unit. |
+| `tmux_kit.bell` | `poll_bell_flag()`, `wait_for_bell()` (0.2.0 — blocks until a bell rings, doesn't just poll once), `build_alert_bell_hook()`. |
+| `tmux_kit.keys` | send-input argv builders + the permission fence (`input_allowed_for_session()`, `session_matches_allowlist()`, `redact_preview()`, `build_send_text_argv()`, `build_send_key_argv()`). |
+| `tmux_kit.spawn` | `spawn_session(name, template, *, env)` — caller resolves the template. `env` omitted now consults the installed factory (0.2.0 fix — see CHANGELOG; previously silently ignored it). |
+| `tmux_kit.lifecycle` | (0.2.0, new) `kill_session()`, `interrupt_session()` — spawn's missing counterpart; previously a consumer had to drop to `run_tmux("kill-session", ...)` by hand. |
+| `tmux_kit.cgroup` | `should_escape()`, `wrap_exec_argv()`, `wrap_shell_argv()`, `environment_mode()`, `reset_probe_cache_for_tests()` — the systemd `--scope` escape that keeps sessions alive past the launching unit. |
+| `tmux_kit.api` | (0.2.0, new) the FACADE — `start`, `list_sessions`, `status`, `is_running`, `read`, `page`, `search`, `wait_for_attention`, `stop`, `kill`, `rename`, `doctor`, `configure`, `default_socket_dir`. Re-exported at the top level (`import tmux_kit; tmux_kit.start(...)`). See README's Quickstart and this module's own docstring. |
+
+**Optional extras (each its own `pyproject.toml` extra, NOT part of the
+stdlib-only base package):**
+
+| Module | Extra | What it gives you |
+|--------|-------|--------------------|
+| `tmux_kit.cli` | `cli` | A Click CLI (`tmux-kit` console script) over the exact `tmux_kit.api` verbs. |
+| `tmux_kit.mcp_server` | `mcp` | An MCP (stdio) server over the exact same verbs, for agent callers. |
 
 ## NOT in the library yet — deferred until a consumer needs them
 
@@ -55,7 +70,11 @@ These are open **on purpose**. The library holds at 0.x precisely so the second
 real consumer shapes them. If you need one, that's the signal to move it — say so.
 
 - **`Sender` / `SendPolicy`** typed send-API. The argv builders + fence exist in
-  `tmux_kit.keys`; the deny-by-default policy object is unbuilt.
+  `tmux_kit.keys`, and `tmux_kit.lifecycle` now has raw execute-side primitives
+  (`kill_session`, `interrupt_session`) alongside them — but the deny-by-default
+  POLICY object (which sessions may be typed into / killed, under what rule) is
+  still unbuilt. Every 0.2.0 addition in this area is a raw, unguarded primitive,
+  same trust model as `proc.run_tmux()` itself.
 - **ttyd / embedded-terminal lifecycle.** muxplex still owns it; the seam is
   defined (`§16` of the extraction plan) but not cut. It is gated on YOUR embedded
   human-UX design — how you want people to reach a session is the forcing function.

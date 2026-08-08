@@ -39,15 +39,21 @@ from collections.abc import Callable
 _env_factory: Callable[[], dict[str, str] | None] | None = None
 
 # Sentinel distinguishing "caller passed no env" from the meaningful
-# ``env=None`` ("inherit the ambient environment, explicitly").
+# ``env=None`` ("inherit the ambient environment, explicitly"). Exported
+# (as ``UNSET``) so every function in this package that takes an ``env=``
+# parameter can share ONE "did the caller actually pass something" marker
+# -- see ``spawn.spawn_session()``'s incident-derived fix note for why a
+# second, look-alike sentinel almost shipped a real footgun.
 _UNSET: object = object()
+UNSET = _UNSET
 
 
 def set_env_factory(factory: Callable[[], dict[str, str] | None] | None) -> None:
     """Install the host application's subprocess-environment factory.
 
-    The factory is called on EVERY ``run_tmux()`` invocation that does not
-    pass an explicit ``env=``, so config re-resolution stays per-call (the
+    The factory is called on EVERY ``run_tmux()`` invocation (and, since
+    the fix below, every ``spawn_session()`` call) that does not pass an
+    explicit ``env=``, so config re-resolution stays per-call (the
     pre-inversion cadence -- a settings edit takes effect on the next tmux
     call, no restart required). muxplex installs
     ``tmux_env(<socket dir from its settings>)`` here; a second app
@@ -55,6 +61,18 @@ def set_env_factory(factory: Callable[[], dict[str, str] | None] | None) -> None
     """
     global _env_factory
     _env_factory = factory
+
+
+def get_env_factory() -> Callable[[], dict[str, str] | None] | None:
+    """Return the currently-installed env factory, or ``None`` if none is
+    installed.
+
+    Exists so a higher layer (``tmux_kit.api``'s facade) can ask "has a
+    consumer already wired their own environment resolution?" before
+    installing a default, WITHOUT reaching into this module's private
+    ``_env_factory`` global directly -- see ``api._ensure_wired()``.
+    """
+    return _env_factory
 
 
 def default_env() -> dict[str, str] | None:

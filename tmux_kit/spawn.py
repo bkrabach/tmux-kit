@@ -30,12 +30,13 @@ import shutil
 
 from tmux_kit.cgroup import should_escape, wrap_shell_argv
 from tmux_kit.observe import enumerate_sessions
+from tmux_kit.proc import UNSET, default_env
 
 _log = logging.getLogger(__name__)
 
 
 async def spawn_session(
-    name: str, template: str, *, env: dict[str, str] | None = None
+    name: str, template: str, *, env: dict[str, str] | None | object = UNSET
 ) -> tuple[bool, str | None]:
     """Run *template* (with ``{name}`` substituted) to create a tmux session
     named *name*. Returns ``(ok, error)``.
@@ -51,9 +52,24 @@ async def spawn_session(
     (``is_valid_session_name``) -- this function does not, so it stays
     usable from a plain CLI process with no HTTP framework in scope.
 
-    *env* is INJECTED config (plan §4.3): the subprocess environment for the
-    spawn (muxplex passes its settings-resolved ``tmux_env()``). ``None``
-    inherits this process's environment unchanged.
+    *env* is INJECTED config (plan §4.3), with the SAME omit-vs-``None``
+    semantics as ``proc.run_tmux()``: passing nothing consults the
+    app-installed ``proc.set_env_factory()`` factory (if any) at call time;
+    passing ``env=None`` explicitly inherits this process's environment
+    unchanged; passing an explicit dict uses it verbatim. muxplex always
+    passes its settings-resolved ``tmux_env()`` explicitly, so this default
+    is a no-op for it either way.
+
+    Fixed 0.2.0: before this release the default was a bare ``None``
+    (silently "inherit ambient, ignore any installed factory"), which
+    diverged from every other function in this package (``run_tmux``,
+    and everything built on it) that consults the installed factory when
+    ``env`` is omitted. A consumer who called ``set_env_factory()`` once at
+    startup and then called ``spawn_session(name, template)`` with no
+    ``env=`` got a session created against the AMBIENT default tmux socket,
+    while a subsequent ``enumerate_sessions()`` (which does consult the
+    factory) looked for it on the configured socket and found nothing --
+    the exact failure that motivated this fix (see CHANGELOG).
 
     The command may start a brand-new tmux SERVER (both the default template
     and e.g. ``amplifier-workspace`` start one if none is running yet). If we
@@ -76,6 +92,9 @@ async def spawn_session(
         surface it (HTTPException for an API, a printed FAIL line for a
         CLI).
     """
+    if env is UNSET:
+        env = default_env()
+
     # Pre-flight: check that the base command is on PATH.
     base_cmd = template.split()[0] if template.strip() else ""
     if base_cmd and not shutil.which(base_cmd):
@@ -97,14 +116,14 @@ async def spawn_session(
                 *wrap_shell_argv(command),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
+                env=env,  # type: ignore[arg-type]
             )
         else:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
+                env=env,  # type: ignore[arg-type]
             )
         _stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=30

@@ -51,4 +51,70 @@ pure move).
 Before running a second consumer on a host that also runs muxplex, read
 plan SS17 (shared tmux server hazards: the global ``alert-bell`` hook slot,
 presence cross-talk, fence overlap, name collisions).
+
+0.2.0 adds:
+
+    lifecycle -- kill_session() / interrupt_session() (spawn's missing
+                 counterpart -- previously a consumer had to drop to
+                 run_tmux("kill-session", ...) by hand)
+    api       -- the FACADE: sensible-default wiring (default socket dir,
+                 lazy env-factory install) over every module above, so a
+                 fresh consumer needs zero knowledge of env factories or
+                 socket dirs to get going. Re-exported at the top level
+                 below -- ``import tmux_kit; await tmux_kit.start(...)``.
+                 An advanced consumer (muxplex) that calls
+                 ``proc.set_env_factory()`` itself is unaffected: the
+                 facade only installs its default when nothing else has.
+
+The same verb names (``start``, ``list_sessions``, ``status``, ``read``,
+``page``, ``search``, ``wait_for_attention``, ``stop``, ``kill``,
+``rename``, ``doctor``) are reused by the optional Click CLI
+(``tmux_kit.cli``, extra ``cli``) and the optional MCP server
+(``tmux_kit.mcp_server``, extra ``mcp``) -- neither is imported here, and
+neither is on the dependency list unless that extra is installed; the
+base package (this import) stays stdlib-only.
 """
+
+from tmux_kit.api import (
+    DoctorReport,
+    PageResult,
+    SearchMatch,
+    SearchResult,
+    SessionInfo,
+    configure,
+    default_socket_dir,
+    doctor,
+    is_running,
+    kill,
+    list_sessions,
+    page,
+    read,
+    rename,
+    search,
+    start,
+    status,
+    stop,
+    wait_for_attention,
+)
+
+__all__ = [
+    "DoctorReport",
+    "PageResult",
+    "SearchMatch",
+    "SearchResult",
+    "SessionInfo",
+    "configure",
+    "default_socket_dir",
+    "doctor",
+    "is_running",
+    "kill",
+    "list_sessions",
+    "page",
+    "read",
+    "rename",
+    "search",
+    "start",
+    "status",
+    "stop",
+    "wait_for_attention",
+]
