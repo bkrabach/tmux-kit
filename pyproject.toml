@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tmux-kit"
-version = "0.44.0"
+version = "0.1.0"
 description = "Async, argv-exec tmux session-management primitives (spawn, observe, presence, bells, cgroup escape)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -49,14 +49,12 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/bkrabach/muxplex"
-Issues = "https://github.com/bkrabach/muxplex/issues"
+Repository = "https://github.com/bkrabach/tmux-kit"
+Issues = "https://github.com/bkrabach/tmux-kit/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tmux_kit"]
 
-# No [tool.pytest.ini_options] / testpaths on purpose: the library's tests
-# (incident tests included) live in muxplex/tests/, where conftest.py's
-# autouse safety rails (isolated SETTINGS_PATH, isolated TMUX_TMPDIR,
-# neutralized port killer) govern them -- plan SS7.3 rail 2, enforced by
-# test_safety_rails.py::test_library_tests_live_under_the_railed_tests_dir.
+# Tests (incident tests included) live in this repo's own tests/ directory,
+# governed by this repo's own conftest.py autouse safety rails (isolated
+# TMUX_TMPDIR) -- see tests/README or conftest.py's module docstring.
