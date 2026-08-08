@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Full suite, including `-m integration` (real tmux against an isolated
+    # TMUX_TMPDIR) and `-m differential` (byte-identical replay against
+    # fleet-recorded real-tmux data) -- UNCONDITIONALLY. In the muxplex repo
+    # the integration marker is deselected by default because the suite is
+    # dangerous near a live muxplex; this repo's CI runners have no live
+    # muxplex to endanger, so there is no reason to hold back (plan §6.1).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Confirm tmux is on PATH
+        run: tmux -V
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run full suite (unit + integration + differential)
+        run: uv run pytest -v
+
+  test-macos:
+    # The sun-path budget (ttyd's SUN_PATH_BUDGET-adjacent concerns) and
+    # `#{pane_current_path}` behaviors this library relies on are
+    # platform-sensitive, and the library claims macOS support (plan §6.1).
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install "3.12"
+
+      - name: Install tmux
+        run: brew install tmux
+
+      - name: Confirm tmux is on PATH
+        run: tmux -V
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run full suite (unit + integration + differential)
+        run: uv run pytest -v

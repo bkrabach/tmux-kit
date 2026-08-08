@@ -1,0 +1,37 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read   # Required for actions/checkout
+  id-token: write  # Required for OIDC Trusted Publisher
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Build package
+        # Single-project repo, no workspace -- a bare `uv build` is exactly
+        # right (contrast muxplex's publish.yml, which needs explicit
+        # --package flags to avoid publishing the tmux-kit workspace member
+        # by accident; that hazard does not exist here).
+        run: uv build
+
+      - name: Publish to PyPI
+        # Requires the `tmux-kit` project's PyPI Trusted Publisher to be
+        # configured for this exact repo/workflow/environment triple
+        # (owner bkrabach, repo tmux-kit, workflow publish.yml, environment
+        # pypi) BEFORE this runs -- see the muxplex repo's own publish.yml
+        # comment: a mismatched publisher triple fails with a 403 *after* a
+        # green build, not at PR time.
+        uses: pypa/gh-action-pypi-publish@release/v1

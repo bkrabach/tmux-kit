@@ -1,0 +1,70 @@
+name: Cross-repo canary (muxplex)
+
+# The bidirectional-flow cost of the repo split (plan §9): once tmux-kit
+# and muxplex are two repos on two release cadences, a tmux-kit change can
+# walk ahead of muxplex's `tmux-kit==` pin with no same-PR signal that it
+# broke muxplex. The `==` pin makes drift VISIBLE (a version delta in one
+# file) but not immediately CAUGHT -- that only happens at the next
+# deliberate muxplex pin bump, unless this canary runs in between.
+#
+# This is that canary, hosted here (rather than as a muxplex-side job)
+# per this repo's own §6 CI scope: a scheduled, non-blocking check that
+# installs THIS repo's current `main` into a fresh muxplex checkout (in
+# place of muxplex's pinned release) and runs muxplex's own suite against
+# it. A red run here means tmux-kit's `main` has drifted from what muxplex
+# expects -- visible weekly instead of only at the next deliberate bump.
+#
+# Deliberately non-blocking (`continue-on-error`-style via a separate,
+# uncritical workflow): this is an early-warning signal for the next
+# deliberate tmux-kit release, not a merge gate on every tmux-kit PR --
+# see plan §9's "mitigations (which reduce, not erase)".
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # weekly, Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  canary-against-muxplex-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout tmux-kit
+        uses: actions/checkout@v4
+        with:
+          path: tmux-kit
+
+      - name: Checkout muxplex@main
+        uses: actions/checkout@v4
+        with:
+          repository: bkrabach/muxplex
+          ref: main
+          path: muxplex
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Install muxplex with THIS tmux-kit checkout overriding the pin
+        working-directory: muxplex
+        run: |
+          uv sync --extra dev
+          uv add --editable ../tmux-kit --no-sync
+          uv sync --extra dev
+
+      - name: Run muxplex's cross-repo contract test against tmux-kit@main
+        working-directory: muxplex
+        run: uv run pytest -v -k contract
+
+      - name: Report drift (informational -- see job's continue-on-error)
+        if: failure()
+        run: |
+          echo "::warning::tmux-kit main has drifted from what muxplex's pinned version expects. This is an early-warning canary, not a merge gate -- see plan §9."
