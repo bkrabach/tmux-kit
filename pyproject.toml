@@ -58,3 +58,10 @@ packages = ["tmux_kit"]
 # Tests (incident tests included) live in this repo's own tests/ directory,
 # governed by this repo's own conftest.py autouse safety rails (isolated
 # TMUX_TMPDIR) -- see tests/README or conftest.py's module docstring.
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: real tmux subprocess required (isolated socket dir)",
+    "differential: replays recorded real-tmux fixtures byte-identically",
+]
