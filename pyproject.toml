@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tmux-kit"
-version = "0.3.1"
+version = "0.3.2"
 description = "Async, argv-exec tmux session-management primitives (spawn, observe, presence, bells, cgroup escape)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -77,6 +77,15 @@ Issues = "https://github.com/bkrabach/tmux-kit/issues"
 # with a clear ImportError-derived message pointing at the extra (see
 # tmux_kit/cli.py's top-of-file guard).
 tmux-kit = "tmux_kit.cli:main"
+# Only functional when the `mcp` extra is installed (`pip install
+# 'tmux-kit[mcp]'`) -- without it, fails with a clear ImportError-derived
+# message pointing at the extra (see tmux_kit/mcp_server.py's top-of-file
+# guard). Added in 0.3.2: README.md and mcp_server.py's own module
+# docstring both told a reader to run `tmux-kit-mcp` before this entry
+# actually existed -- a reader following either verbatim got `command not
+# found`. This entry is what makes that documented invocation true,
+# instead of correcting the docs to describe a script that doesn't exist.
+tmux-kit-mcp = "tmux_kit.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tmux_kit"]

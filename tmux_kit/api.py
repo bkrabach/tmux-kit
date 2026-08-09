@@ -429,6 +429,29 @@ async def is_running(name: str) -> bool:
     return await status(name) == "running"
 
 
+async def exit_code(name: str) -> int | None:
+    """Answer "did it SUCCEED?" for a *finished* session -- the question
+    ``status()`` deliberately does not answer (it only distinguishes
+    running/finished/missing, not success/failure).
+
+    Thin wrapper over ``observe.pane_exit_code()`` -- see its docstring
+    for the full set of cases that return ``None`` (still running,
+    session gone, tmux unreachable, or ``remain-on-exit`` wasn't set so
+    the pane/session was already torn down by the time this was called).
+    A caller that needs a durable answer should call ``status()`` first
+    to confirm ``"finished"``, and needs the session's
+    ``remain-on-exit on`` for the exit status to still be readable at
+    all (tmux's factory default tears a dead pane down immediately).
+
+    Returns:
+        The pane's exit status (0 typically success, nonzero failure,
+        program-specific beyond that), or ``None`` if not currently
+        knowable -- never raises.
+    """
+    _ensure_wired()
+    return await observe.pane_exit_code(name)
+
+
 async def read(name: str, lines: int = observe.DEFAULT_CAPTURE_LINES) -> str:
     """Capture the last *lines* lines of *name*'s pane -- a thin,
     wired-by-default wrapper over ``observe.capture_pane()``."""

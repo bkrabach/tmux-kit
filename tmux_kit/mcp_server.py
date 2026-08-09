@@ -17,6 +17,34 @@ Run as a stdio server:
     python -m tmux_kit.mcp_server
     # or, if installed: tmux-kit-mcp
 
+SCOPE (0.3.2) -- this server sees ONLY tmux-kit's own socket, never any
+ambient/other tmux server
+================================================================
+Every tool below (``list_sessions`` above all -- it is usually the first
+call an agent makes) reports ONLY on the tmux server reachable via this
+process's configured socket directory (``doctor``'s ``socket_dir``, the
+facade's ``default_socket_dir()`` unless overridden). This is a
+DIFFERENT, DELIBERATELY ISOLATED server from a human operator's own
+ambient tmux session (their actual terminal) -- see
+``tmux_kit/CONSUMERS.md``'s "Two apps, one tmux server" hazard and
+``api.default_socket_dir()``'s docstring. **``list_sessions`` returning
+``[]`` means "no sessions on tmux-kit's own socket" -- it is NOT evidence
+that nothing is running on this host**, and must never be reported to a
+human as "nothing is running."
+
+If a result here contradicts what a human tells you (e.g. they say a
+session is running and you see none): **do NOT fall back to running a raw
+`tmux` command to "double check."** If you (the calling agent/process)
+are yourself a descendant of an attached tmux client, `$TMUX` is set in
+your environment, and a bare `tmux list-sessions`/`tmux kill-server`
+resolves against THAT ambient server in preference to any
+`TMUX_TMPDIR` override -- this is exactly the mechanism that destroyed 73
+of an operator's live sessions in a real incident (see AGENTS.md's
+"`TMUX_TMPDIR` is not an isolation boundary"). If you genuinely need to
+run a real, throwaway tmux command to investigate, use
+`tmux_kit.isolation.isolated_tmux_server()` (also importable as
+`tmux_kit.isolated_tmux_server`) -- never a bare `tmux` invocation.
+
 AUTHORIZATION (0.3.0) -- destructive verbs are deny-by-default
 ================================================================
 ``stop`` (Ctrl-C, recoverable) and ``kill`` (kill-session, unrecoverable)
@@ -159,6 +187,10 @@ async def start(name: str, command: str | None = None, cwd: str | None = None) -
     dev server, a build, a long task) that keeps running after this call
     returns.
 
+    SCOPE: created on tmux-kit's own socket only -- see ``list_sessions``'s
+    docstring. It will NOT be visible to a human's ambient `tmux attach`
+    unless they know to point at this same socket.
+
     ARGS:
         name: session name. REJECTED (returned as ``ok=False``, see
             RETURNS) if it fails tmux-kit's name-charset check, or if it
@@ -184,10 +216,23 @@ async def start(name: str, command: str | None = None, cwd: str | None = None) -
 
 @mcp.tool()
 async def list_sessions() -> list[dict]:
-    """List every session visible on the configured socket.
+    """List every session visible on tmux-kit's OWN configured socket.
 
-    WHEN TO USE: "what's running right now?" -- usually the first tool
-    call before using any other tool below, to discover session names.
+    WHEN TO USE: "what's running right now, on tmux-kit's socket?" --
+    usually the first tool call before using any other tool below, to
+    discover session names.
+
+    SCOPE: this is NOT "everything running on this host." tmux-kit talks
+    only to its own configured server (see ``doctor``'s ``socket_dir``),
+    never a human operator's ambient tmux session. An EMPTY result means
+    "no sessions on tmux-kit's own socket" -- it does NOT mean "nothing is
+    running," and must never be reported to a human that way. If this
+    result contradicts what a human tells you, do not "double check" with
+    a raw `tmux` command -- see this module's docstring's SCOPE section
+    for why that is exactly the mechanism that destroyed 73 real sessions
+    in a past incident, and use
+    `tmux_kit.isolation.isolated_tmux_server()` instead if you need to run
+    real tmux commands to investigate.
 
     RETURNS: a list of {"name", "running", "activity", "created", "cwd"}.
     ``running`` is False when the session's active pane's command has
@@ -206,9 +251,39 @@ async def status(name: str) -> str:
     reading its output -- whether it's still running, finished (its
     pane's command exited), or gone entirely.
 
+    SCOPE: checked against tmux-kit's own socket only (see
+    ``list_sessions``'s docstring) -- "missing" means "not on tmux-kit's
+    socket," not "not running anywhere." Never fall back to a raw `tmux`
+    command to check further; see this module's docstring's SCOPE section.
+
     RETURNS: one of "missing", "running", "finished".
     """
     return await api.status(name)
+
+
+@mcp.tool()
+async def exit_code(name: str) -> int | None:
+    """Answer "did it SUCCEED?" for a finished session -- `status` doesn't.
+
+    WHEN TO USE: `status` already reported "finished" and you need to
+    know whether the command actually succeeded (exit 0) or failed
+    (nonzero) -- "did the build pass?", not just "is the build done?".
+
+    SCOPE: tmux-kit's own socket only -- see ``list_sessions``'s
+    docstring.
+
+    CAVEAT: tmux only remembers a pane's exit status if that session's
+    window has `remain-on-exit on` set. By tmux's factory default
+    (`remain-on-exit off`), a finished pane -- and the session with it, if
+    it was the last pane -- is torn down immediately, so there is often
+    nothing left to ask. A `null` return does NOT mean "it succeeded" --
+    it means "not knowable" (still running, session gone, or exit status
+    not retained). Call `status` first to confirm "finished".
+
+    RETURNS: the integer exit code (0 typically success, nonzero
+    failure), or `null` if not currently knowable. Never raises.
+    """
+    return await api.exit_code(name)
 
 
 @mcp.tool()
@@ -217,6 +292,10 @@ async def read(name: str, lines: int = 30) -> str:
 
     For history deeper than this recent window, use ``page``. To find one
     thing across a lot of history, use ``search``.
+
+    SCOPE: tmux-kit's own socket only -- an empty string here can mean
+    "no such session on tmux-kit's socket" as well as "empty pane"; see
+    ``list_sessions``'s docstring, and never fall back to raw `tmux`.
 
     RETURNS: the captured text, ANSI escapes included. Empty string if the
     session is missing or unreachable (never raises for that).
@@ -232,6 +311,9 @@ async def page(name: str, start: int | None = None, count: int = 100) -> dict:
     window, one page at a time. Absolute line 0 is the OLDEST line
     currently in the history buffer; ``start=None`` (the default) returns
     the most recent ``count`` lines.
+
+    SCOPE: tmux-kit's own socket only -- see ``list_sessions``'s docstring.
+    Never fall back to raw `tmux` to look deeper.
 
     RETURNS: {"text", "start", "total", "returned", "saturated"} -- see
     ``tmux_kit.api.page()``'s docstring for exactly what each field means.
@@ -256,6 +338,9 @@ async def search(
         max_lines / max_matches: caps on how much history to pull and how
             many matches to return -- raise them for a deeper/wider search.
 
+    SCOPE: tmux-kit's own socket only -- see ``list_sessions``'s docstring.
+    Never fall back to raw `tmux` to search further.
+
     RETURNS: {"matches": [{"line", "text"}, ...], "truncated": bool}.
     ``truncated=True`` means not everything was searched or not every
     match was returned -- never treat a result as exhaustive without
@@ -267,16 +352,47 @@ async def search(
     return dataclasses.asdict(result)
 
 
+#: Default timeout (seconds) for the `wait_for_attention` MCP tool below.
+#: Deliberately FINITE, unlike `tmux_kit.api.wait_for_attention()` /
+#: `tmux_kit.bell.wait_for_bell()`'s own `timeout=None` ("wait forever")
+#: default: an MCP tool call is a single request/response round trip made
+#: by an unsupervised agent with no Ctrl-C -- there is no human available
+#: to interrupt an indefinite block the way there is for a CLI invocation
+#: or a deliberate library call. "Wait forever" remains available, but
+#: only as an EXPLICIT opt-in (pass `timeout=None` yourself).
+_DEFAULT_MCP_WAIT_TIMEOUT = 30.0
+
+
 @mcp.tool()
-async def wait_for_attention(name: str, timeout: float | None = None) -> bool:
+async def wait_for_attention(
+    name: str, timeout: float | None = _DEFAULT_MCP_WAIT_TIMEOUT
+) -> bool:
     """Block until a session rings its bell (e.g. it stopped to ask [y/n]).
 
     WHEN TO USE: waiting for a program that pauses for interactive input,
     instead of repeatedly calling ``read`` in a loop.
 
-    RETURNS: True as soon as the bell rings. False if `timeout` seconds
-    elapse first (omit `timeout`, the default, to wait forever -- bound
-    this call yourself if you need an outer limit).
+    SCOPE: tmux-kit's own socket only -- see ``list_sessions``'s docstring.
+
+    TIMEOUT: defaults to 30 seconds (unlike the underlying library
+    function, which defaults to waiting forever) -- an unsupervised tool
+    call is a bad place for an unbounded block. A `False` return after the
+    default timeout means "not yet -- call this again," NOT an error or
+    "it will never ring." Pass `timeout=None` explicitly if you genuinely
+    want to wait indefinitely for this one call (rarely the right choice
+    here; prefer calling again after a `False`).
+
+    STICKY FLAG WARNING: the underlying tmux bell flag is NOT cleared by
+    reading it (see `tmux_kit.bell.poll_bell_flag()`'s docstring). If a
+    bell rang once and nothing has cleared the flag since (e.g. no one
+    has reattached to acknowledge it), EVERY subsequent call here for the
+    same session returns True immediately, even for a bell that already
+    happened. Do not treat a repeated `True` as proof of a NEW event
+    without also checking `read`/`search` for what actually changed.
+
+    RETURNS: True as soon as the bell rings (or if it already had, per the
+    sticky-flag warning above). False if `timeout` seconds elapse first --
+    read that as "still working, ask again."
     """
     return await api.wait_for_attention(name, timeout=timeout)
 
@@ -288,6 +404,10 @@ async def stop(name: str) -> str:
     The session and its pane are left running afterward -- call `status`
     afterward to see whether the command actually stopped. For an
     immediate, unconditional stop of the whole session, use `kill`.
+
+    SCOPE: NAME is resolved against tmux-kit's own socket only -- see
+    ``list_sessions``'s docstring. It cannot reach, and cannot be tricked
+    into reaching, a human's ambient tmux session.
 
     AUTHORIZATION (deny-by-default): refused with `PermissionError` unless
     this server's operator set TMUX_KIT_MCP_STOP_ENABLED=true and
@@ -312,6 +432,10 @@ async def kill(name: str) -> str:
 
     Use `stop` instead if you want to ask the running command to exit
     gracefully while keeping the session around.
+
+    SCOPE: NAME is resolved against tmux-kit's own socket only -- see
+    ``list_sessions``'s docstring. It cannot reach, and cannot be tricked
+    into reaching, a human's ambient tmux session.
 
     AUTHORIZATION (deny-by-default): refused with `PermissionError` unless
     this server's operator set TMUX_KIT_MCP_KILL_ENABLED=true and
@@ -340,6 +464,9 @@ async def rename(old_name: str, new_name: str) -> str:
     silently turns '.' into '_' at rename time with no error) -- raising
     rather than returning a name that isn't what was asked for.
 
+    SCOPE: resolved against tmux-kit's own socket only -- see
+    ``list_sessions``'s docstring.
+
     RETURNS: the OBSERVED new name on success (always equal to
     `new_name`, since a mangle-prone name is rejected before any tmux
     call). Raises on failure, with the reason in the message.
@@ -359,7 +486,10 @@ async def doctor() -> dict:
 
     RETURNS: {"tmux_found", "tmux_version", "cgroup_mode",
     "cgroup_escape_ready", "socket_dir", "socket_dir_writable", "notes"}.
-    Never raises for an environment problem -- read the fields/notes.
+    ``socket_dir`` is the SCOPE every other tool in this server is limited
+    to (see ``list_sessions``'s docstring) -- not tmux's ambient default,
+    not a human operator's own tmux server. Never raises for an
+    environment problem -- read the fields/notes.
     """
     return dataclasses.asdict(await api.doctor())
 

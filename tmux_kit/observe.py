@@ -494,6 +494,58 @@ async def pane_is_dead(session_name: str) -> bool:
     return output.strip() == "1"
 
 
+async def pane_exit_code(session_name: str) -> int | None:
+    """Return the exit code of *session_name*'s active pane's foreground
+    command, via tmux's own ``#{pane_dead_status}``, or ``None`` if that's
+    not knowable right now.
+
+    ``None`` covers every case where the question doesn't have an answer
+    yet, not just errors -- do not treat ``None`` as "it failed":
+
+    - The session doesn't exist, or tmux is unreachable (same "unknown,
+      not a fact" convention as ``pane_is_dead()``/``probe_tmux_epoch()``).
+    - The pane is still RUNNING (``pane_dead`` is false) -- tmux only
+      populates ``pane_dead_status`` once the foreground command has
+      actually exited. Check ``pane_is_dead()`` (or ``api.status()``)
+      first if you need to distinguish "still running" from "finished but
+      exit code unavailable."
+    - By default (``remain-on-exit off``, tmux's factory default) a dead
+      pane -- and the session with it, if it was the last pane -- is torn
+      down essentially immediately, so the common case is simply "the
+      session vanished, this returns None because it's gone" rather than
+      "the session is sitting there with a readable exit code." A
+      caller that wants a durable answer to "did it succeed?" needs
+      ``remain-on-exit on`` for that session/window (see
+      ``pane_is_dead()``'s docstring for the same caveat).
+
+    This exists because "is it done?" (``pane_is_dead()``/``status()``)
+    and "did it SUCCEED?" are two different questions this library could
+    already half-answer (tmux exposes the fact via
+    ``#{pane_dead_status}``) but had no entry point for -- exactly the gap
+    an agent supervising a build/test run actually cares about (see
+    CHANGELOG for the review that surfaced this).
+
+    Returns:
+        The pane's exit status as an ``int`` (0 typically means success,
+        nonzero a failure -- interpretation of the specific nonzero value
+        is caller/program-specific, same as any shell exit code), or
+        ``None`` per the cases above.
+    """
+    try:
+        output = await run_tmux(
+            "display-message", "-p", "-t", session_name, "#{pane_dead_status}"
+        )
+    except (RuntimeError, FileNotFoundError):
+        return None
+    stripped = output.strip()
+    if not stripped:
+        return None
+    try:
+        return int(stripped)
+    except ValueError:
+        return None
+
+
 async def snapshot_all(names: list[str]) -> dict[str, str]:
     """Capture all sessions concurrently and return a name→text mapping.
 

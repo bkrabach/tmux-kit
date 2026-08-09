@@ -48,9 +48,16 @@ kernel errno three layers down. See :func:`_short_tmp_base` and
 
 This is a stdlib-only, core module (see ``tests/test_rails.py``'s
 import-purity rail) -- it is meant to be the obvious thing any consumer,
-test, or agent reaches for instead of hand-rolling socket isolation:
+test, or agent reaches for instead of hand-rolling socket isolation. As of
+0.3.2 it is also re-exported at the top level (``import tmux_kit;
+tmux_kit.isolated_tmux_server``), not just via this submodule -- a prior
+release left it importable only the long way, which meant a reader who
+only skimmed ``import tmux_kit``'s own facade surface (the ``README.md``
+Quickstart path) had no way to discover THE primitive that would have
+prevented the incident described below:
 
     from tmux_kit.isolation import isolated_tmux_server
+    # or, equivalently: from tmux_kit import isolated_tmux_server
 
     async with isolated_tmux_server() as server:
         await server.run("new-session", "-d", "-s", "probe")

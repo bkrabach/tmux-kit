@@ -58,9 +58,10 @@ low-level modules directly; the facade only installs its default when
 nothing else has been wired (see `tmux_kit/api.py`'s module docstring).
 
 **Full facade verb reference:** `start`, `list_sessions`, `status`,
-`is_running`, `read`, `page`, `search`, `wait_for_attention`, `stop`,
-`kill`, `rename`, `doctor` -- see `tmux_kit/api.py`'s docstrings (each
-function documents its own contract; this file does not duplicate them).
+`is_running`, `exit_code`, `read`, `page`, `search`, `wait_for_attention`,
+`stop`, `kill`, `rename`, `doctor` -- see `tmux_kit/api.py`'s docstrings
+(each function documents its own contract; this file does not duplicate
+them).
 
 **Full low-level module/function reference:** `tmux_kit/CONSUMERS.md` is
 the single canonical enumeration of every module and the functions it
@@ -70,9 +71,15 @@ function-doesn't-exist bug for a first-time reader (see CHANGELOG 0.2.0).
 
 ## Optional extras: CLI and MCP server
 
-Both are thin wrappers over the exact same facade verbs above -- same
-names in the CLI, the MCP tool descriptions, and `tmux_kit.api`. Neither
-adds a dependency to the base package; each is its own extra:
+Both are thin wrappers over the exact same facade verbs above. The MCP
+tool descriptions use the identical names as `tmux_kit.api` (`start`,
+`list_sessions`, `status`, `read`, `page`, `search`,
+`wait_for_attention`, `stop`, `kill`, `rename`, `doctor`) -- there's no
+`is_running` tool (it's a convenience wrapper around `status`, not a
+separate call). The CLI uses the same names too, with two deliberately
+shortened for a terminal: `list_sessions` -> `list`, `wait_for_attention`
+-> `wait` (also no `is_running` command -- use `status`). Neither extra
+adds a dependency to the base package; each is its own:
 
 ```bash
 pip install 'tmux-kit[cli]'   # -> the `tmux-kit` command (Click)
@@ -124,11 +131,11 @@ hyphens are illegal in Python identifiers (cf. `python-dateutil` ->
 
 ```toml
 # Public installs (primary path):
-dependencies = ["tmux-kit==0.2.0"]
+dependencies = ["tmux-kit==0.3.2"]
 
 # Pinned git install (e.g. a managed environment that cannot reach
 # public PyPI -- see CONSUMERS.md):
-#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.2.0
+#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.3.2
 ```
 
 ```python

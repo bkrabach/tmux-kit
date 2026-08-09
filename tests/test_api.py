@@ -306,6 +306,18 @@ async def test_is_running_true_only_for_running_status(monkeypatch):
     assert await api.is_running("a") is False
 
 
+async def test_exit_code_delegates_to_pane_exit_code(monkeypatch):
+    mock = AsyncMock(return_value=1)
+    monkeypatch.setattr(api.observe, "pane_exit_code", mock)
+    assert await api.exit_code("a") == 1
+    mock.assert_awaited_once_with("a")
+
+
+async def test_exit_code_none_when_not_knowable(monkeypatch):
+    monkeypatch.setattr(api.observe, "pane_exit_code", AsyncMock(return_value=None))
+    assert await api.exit_code("a") is None
+
+
 # ---------------------------------------------------------------------------
 # read()
 # ---------------------------------------------------------------------------

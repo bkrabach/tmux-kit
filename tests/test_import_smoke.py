@@ -68,6 +68,7 @@ from tmux_kit.observe import (
     capture_pane_metadata,
     capture_pane_window,
     enumerate_sessions,
+    pane_exit_code,
     pane_is_dead,
     probe_tmux_epoch,
     snapshot_all,

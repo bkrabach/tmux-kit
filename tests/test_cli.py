@@ -29,6 +29,7 @@ def test_help_lists_every_verb():
         "start",
         "list",
         "status",
+        "exit-code",
         "read",
         "page",
         "search",

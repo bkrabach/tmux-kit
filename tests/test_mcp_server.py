@@ -24,6 +24,7 @@ async def test_every_facade_verb_is_registered_as_a_tool():
         "start",
         "list_sessions",
         "status",
+        "exit_code",
         "read",
         "page",
         "search",
@@ -34,6 +35,11 @@ async def test_every_facade_verb_is_registered_as_a_tool():
         "doctor",
     }
     assert expected <= names
+
+
+async def test_exit_code_tool_delegates_to_api(monkeypatch):
+    monkeypatch.setattr(mcp_server.api, "exit_code", AsyncMock(return_value=1))
+    assert await mcp_server.exit_code("demo") == 1
 
 
 async def test_start_tool_delegates_to_api(monkeypatch):

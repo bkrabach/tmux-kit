@@ -74,6 +74,23 @@ def main() -> None:
     caller couldn't also do directly. Session NAMEs are not validated by
     this CLI (same contract as the library): pass a name you control, or
     one that came back from `tmux-kit list`.
+
+    SCOPE: every command here talks ONLY to tmux-kit's own configured
+    socket (see `tmux-kit doctor`'s `socket_dir`) -- a DIFFERENT,
+    deliberately isolated tmux server from any ambient session (e.g. the
+    terminal you are typing this command into, if it happens to be a
+    tmux pane). `tmux-kit list` returning nothing means "nothing on
+    tmux-kit's own socket," NOT "nothing running on this host" -- if that
+    contradicts what you expect, do NOT "double check" with a bare `tmux`
+    command. If you (or an agent driving this CLI) are inside a tmux pane,
+    `$TMUX` is set and a bare `tmux` invocation resolves against THAT
+    ambient server in preference to any `TMUX_TMPDIR` override -- this is
+    the exact mechanism that destroyed 73 of an operator's live sessions
+    in a real incident (see this repo's AGENTS.md, "`TMUX_TMPDIR` is not
+    an isolation boundary"). Need to run a real, throwaway tmux command to
+    investigate instead? Use `tmux_kit.isolation.isolated_tmux_server()`
+    (a Python context manager -- there is no CLI equivalent), never a bare
+    `tmux` command.
     """
 
 
@@ -98,6 +115,10 @@ def start(name: str, command: str | None, cwd: str | None) -> None:
     WHEN TO USE: you need a new named tmux session running a command (a
     dev server, a build, a long agent task) that keeps running after this
     CLI invocation exits.
+
+    SCOPE: created on tmux-kit's own socket only (see `tmux-kit --help`'s
+    SCOPE section) -- not visible to a human's ambient `tmux attach`
+    unless they know to point at this same socket.
 
     RETURNS: "started 'NAME'" on success.
 
@@ -129,6 +150,11 @@ def list_cmd(as_json: bool) -> None:
     WHEN TO USE: "what's running right now?" -- usually the first command
     run to discover session names before using any other command below.
 
+    SCOPE: tmux-kit's own socket only (see `tmux-kit --help`'s SCOPE
+    section) -- "(no sessions)" means none on THIS socket, not "nothing
+    running on this host." Never fall back to a bare `tmux` command to
+    check further.
+
     RETURNS (human): one line per session -- name, tab, "running" or
     "finished" (see `status --help` for that distinction).
     RETURNS (--json): the full list of tmux_kit.api.SessionInfo (name,
@@ -155,6 +181,11 @@ def status(name: str, as_json: bool) -> None:
     attaching or reading output -- whether it's still running, finished
     (its pane's foreground command exited), or gone entirely.
 
+    SCOPE: checked against tmux-kit's own socket only (see `tmux-kit
+    --help`'s SCOPE section) -- "missing" means "not on tmux-kit's
+    socket," not "not running anywhere." Never fall back to a bare `tmux`
+    command to check further.
+
     RETURNS: one of "missing", "running", "finished" (see
     tmux_kit.api.status()'s docstring for the exact rule).
 
@@ -162,6 +193,38 @@ def status(name: str, as_json: bool) -> None:
     answer, not a CLI failure.
     """
     _emit(_run(api.status(name)), as_json=as_json)
+
+
+@main.command("exit-code")
+@click.argument("name")
+@_json_option()
+def exit_code_cmd(name: str, as_json: bool) -> None:
+    """Answer "did it SUCCEED?" for a finished session -- `status` doesn't.
+
+    WHEN TO USE: `status NAME` already reported "finished" and you need to
+    know whether the command actually succeeded (exit 0) or failed
+    (nonzero), not just that it stopped -- "did the build pass?", not
+    just "is the build done?".
+
+    SCOPE: tmux-kit's own socket only (see `tmux-kit --help`'s SCOPE
+    section).
+
+    CAVEAT: tmux only remembers a pane's exit status if that session/
+    window has `remain-on-exit on` set -- by tmux's factory default
+    (`remain-on-exit off`), a finished pane (and the session with it, if
+    it was the last pane) is torn down immediately, so there is often
+    nothing left to ask. `null`/empty output here does NOT mean "it
+    succeeded" -- it means "not knowable" (still running, session gone,
+    or exit status not retained). Check `status NAME` first.
+
+    RETURNS: the integer exit code (0 typically success, nonzero
+    failure), or nothing (empty line / JSON `null`) if not knowable.
+    """
+    result = _run(api.exit_code(name))
+    if as_json:
+        _emit(result, as_json=True)
+        return
+    click.echo("" if result is None else str(result))
 
 
 @main.command()
@@ -179,6 +242,9 @@ def read(name: str, lines: int) -> None:
     output without paging through scrollback. For deeper history use
     `tmux-kit page`; to search for one thing across a lot of history use
     `tmux-kit search`.
+
+    SCOPE: tmux-kit's own socket only (see `tmux-kit --help`'s SCOPE
+    section). Never fall back to a bare `tmux` command to look further.
 
     RETURNS: the captured text, printed as-is (ANSI escapes included, same
     as `tmux capture-pane -e`).
@@ -209,6 +275,9 @@ def page(name: str, start_line: int | None, count: int, as_json: bool) -> None:
     one page at a time, without learning tmux's own relative -S/-E
     coordinate system (this command does that conversion for you -- see
     tmux_kit.api.page()'s docstring).
+
+    SCOPE: tmux-kit's own socket only (see `tmux-kit --help`'s SCOPE
+    section). Never fall back to a bare `tmux` command to look further.
 
     RETURNS (--json): tmux_kit.api.PageResult (text, start, total,
     returned, saturated). RETURNS (human): the text, then a one-line
@@ -262,6 +331,9 @@ def search(
     appeared -- an error, a prompt, a specific log line -- just that you
     need to find it.
 
+    SCOPE: tmux-kit's own socket only (see `tmux-kit --help`'s SCOPE
+    section). Never fall back to a bare `tmux` command to search further.
+
     RETURNS (--json): tmux_kit.api.SearchResult (matches: [{line, text}],
     truncated). RETURNS (human): one "LINE: TEXT" per match; a trailing
     "(truncated)" note on stderr if not everything was searched/returned.
@@ -286,7 +358,12 @@ def search(
     "--timeout",
     type=float,
     default=None,
-    help="Give up after this many seconds (default: wait forever).",
+    help=(
+        "Give up after this many seconds (default: wait forever -- an "
+        "explicit choice for an interactive CLI invocation with a human "
+        "who can Ctrl-C; contrast the MCP `wait_for_attention` tool, "
+        "which defaults to a finite 30s for exactly the opposite reason)."
+    ),
 )
 def wait(name: str, timeout: float | None) -> None:
     """Block until a session rings its bell (e.g. it stopped to ask [y/n]).
@@ -294,8 +371,18 @@ def wait(name: str, timeout: float | None) -> None:
     WHEN TO USE: an agent or script that needs to know the MOMENT a
     program wants attention, instead of polling `tmux-kit read` in a loop.
 
-    RETURNS: "bell" and exit code 0 as soon as the bell rings. If
-    --timeout elapses first: "timeout" and exit code 1 -- read that as
+    SCOPE: tmux-kit's own socket only (see `tmux-kit --help`'s SCOPE
+    section).
+
+    STICKY FLAG WARNING: the underlying tmux bell flag is NOT cleared by
+    reading it. If a bell already rang and nothing has cleared the flag
+    since, this returns "bell" immediately every time it's called for
+    that session, even for a bell that already happened -- do not treat a
+    repeated "bell" as proof of a NEW event without checking `read` too.
+
+    RETURNS: "bell" and exit code 0 as soon as the bell rings (or
+    immediately, if it already had -- see the sticky-flag warning above).
+    If --timeout elapses first: "timeout" and exit code 1 -- read that as
     "still working, ask again", not as an error.
     """
     rang = _run(api.wait_for_attention(name, timeout=timeout))
@@ -316,6 +403,9 @@ def stop(name: str) -> None:
     or its exit output). For an immediate, unconditional stop of the
     whole session use `tmux-kit kill`.
 
+    SCOPE: NAME is resolved against tmux-kit's own socket only (see
+    `tmux-kit --help`'s SCOPE section).
+
     RETURNS: "sent Ctrl-C to 'NAME'". Does not confirm the command
     actually stopped -- check with `tmux-kit status NAME` afterward.
     """
@@ -331,6 +421,9 @@ def kill(name: str) -> None:
     WHEN TO USE: you're done with a session and want it gone now,
     regardless of what's running in it. For a graceful "ask it to stop
     first" use `tmux-kit stop`.
+
+    SCOPE: NAME is resolved against tmux-kit's own socket only (see
+    `tmux-kit --help`'s SCOPE section).
 
     FAILS WHEN: NAME doesn't exist, or tmux is unreachable (its stderr is
     printed). EXIT CODES: 0 success, 1 failure.
@@ -354,6 +447,9 @@ def rename(old_name: str, new_name: str) -> None:
 
     RETURNS: the OBSERVED new name on success (identical to NEW_NAME,
     since this command rejects any name tmux would mangle up front).
+
+    SCOPE: resolved against tmux-kit's own socket only (see `tmux-kit
+    --help`'s SCOPE section).
 
     FAILS WHEN: NEW_NAME is invalid, contains '.', or tmux refuses (e.g.
     duplicate session) -- reason printed, exit code 1.

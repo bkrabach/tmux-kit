@@ -3,6 +3,160 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.3.2
+
+Two independent reviews (a seven-lens design council and simulated user
+research including an "AI agent" persona) landed the same day as a real
+incident in which an agent, believing `TMUX_TMPDIR` isolated it, destroyed
+73 of an operator's live tmux sessions via a hand-rolled `tmux` command
+(see AGENTS.md). The reviews' core finding: nothing in this library's own
+MCP tool descriptions or CLI `--help` told an agent that `list_sessions`
+answers "what's running on tmux-kit's own socket," not "what's running on
+this host" -- so an empty result reads as authoritative ground truth
+instead of scope, and the trained recovery ("let me just check with a
+raw `tmux ls`") is exactly the incident's own trigger. Both reviews'
+claims were independently verified against source before any of this was
+implemented -- not taken on faith.
+
+### Fixed
+
+- **No MCP tool description or CLI `--help` text stated that tmux-kit
+  operates on its own private socket directory, never the caller's
+  ambient tmux server.** Every observation-oriented tool/command
+  (`list_sessions`/`list`, `status`, `read`, `page`, `search`,
+  `wait_for_attention`/`wait`, `doctor`, plus `start`/`stop`/`kill`/
+  `rename` for the sessions they touch) now states this explicitly,
+  where an agent actually reads it (the tool description / `--help`
+  text itself, not just the README): the scope is tmux-kit's own
+  socket; an empty/missing result means "nothing on THIS socket," never
+  "nothing running"; and -- the specific, named prohibition -- never
+  fall back to a raw `tmux` command to "double check," because an
+  inherited `$TMUX` (present whenever the calling process is itself
+  inside a tmux pane, common for coding agents) silently outranks
+  `TMUX_TMPDIR` with no explicit `-L`/`-S`, which is exactly the
+  mechanism that destroyed the 73 sessions. Each of these call sites
+  points at `tmux_kit.isolation.isolated_tmux_server()` as the correct
+  tool for a real, throwaway tmux probe instead.
+- **`tmux_kit.isolation.isolated_tmux_server()` -- the direct remedy for
+  the incident class above -- was not exported from `tmux_kit/__init__.py`**,
+  reachable only via `from tmux_kit.isolation import isolated_tmux_server`,
+  not the top-level facade path (`import tmux_kit; tmux_kit.start(...)`)
+  every other quickstart-documented capability uses. Now also re-exported
+  as `tmux_kit.isolated_tmux_server`. CLI/MCP exposure remains
+  deliberately NOT built, per 0.3.0's "Considered, not built" entry below
+  this one -- that reasoning (a throwaway async context manager has no
+  clean synchronous-CLI or single-round-trip-MCP shape) still holds; this
+  release only fixes the import-path gap, which was a pure oversight, not
+  a design question.
+- **`tmux_kit/proc.py`'s `tmux_env()` docstring did not disclose that its
+  `env.pop("TMUX", None)` line is load-bearing**, not incidental cleanup:
+  it is the entire reason this module's production `run_tmux()` call
+  path is safe against the `$TMUX`-outranks-`TMUX_TMPDIR` hazard without
+  requiring an explicit `-L`/`-S` on every call the way
+  `tmux_kit.isolation` does. The docstring now says so explicitly, names
+  what breaks if the pop is ever made conditional, and cross-references
+  `tmux_kit/isolation.py`. Also explicitly decided and written down (not
+  left ambiguous): `tests/test_rails.py`'s `-L`/`-S` CI rail continues to
+  exclude `tmux_kit/`'s own production contract by name -- this is a
+  DECIDED position (proc.py never merely relies on `TMUX_TMPDIR`
+  outranking `$TMUX`; it removes `$TMUX` from the child environment
+  entirely, so there's no environment shape in which the hazard applies),
+  not an oversight, and both files now say so.
+- **Phantom console script.** `README.md` and `tmux_kit/mcp_server.py`'s
+  own module docstring (twice) told a reader to run `tmux-kit-mcp`, but
+  `pyproject.toml`'s `[project.scripts]` registered only `tmux-kit` --
+  a reader following either verbatim got `command not found`. Fixed by
+  adding the `tmux-kit-mcp = "tmux_kit.mcp_server:main"` entry point
+  (functional once the `mcp` extra is installed, same guarded-import
+  pattern as the existing `tmux-kit` script), making the existing
+  documentation true rather than rewriting it to describe a script that
+  didn't exist.
+- **Stale version pin in README.md.** Lines 127/131 pinned
+  `tmux-kit==0.2.0` / `@v0.2.0` against an actual version of 0.3.1 --
+  updated to the version this release ships as (0.3.2).
+- **False cross-surface naming-parity claim in README.md.** The text
+  claimed "same names in the CLI, the MCP tool descriptions, and
+  `tmux_kit.api`," which is not true: `is_running` has neither a CLI
+  command nor an MCP tool (it's a convenience wrapper around `status`),
+  and the CLI shortens two verbs for terminal ergonomics
+  (`list_sessions` -> `list`, `wait_for_attention` -> `wait`) that MCP
+  keeps at full length -- the README's own next code block
+  (`tmux-kit list --json`) contradicted the claim three lines above it.
+  Fixed by stating the actual mapping honestly instead of renaming the
+  CLI's already-tested, already-shipped short verbs to force a literal
+  match -- that would be a user-facing breaking change to a stable
+  surface for a documentation claim, not a documentation fix.
+
+### Added
+
+- **`observe.pane_exit_code()` / `api.exit_code()` / CLI `exit-code` /
+  MCP `exit_code`** -- "did it SUCCEED?" for a finished session, via
+  tmux's own `#{pane_dead_status}`. `status()` deliberately only answers
+  running/finished/missing, never success/failure -- every persona in
+  the simulated user research asked some form of "did the build pass?",
+  a question this library could already half-answer (tmux exposes the
+  fact) but had no entry point for. Purely additive: `status()`'s
+  existing three-value contract is completely unchanged, so nothing that
+  depends on it (CLI/MCP docs, existing tests, other consumers) is
+  affected. Same "unknown, not a fact" convention as `pane_is_dead()`:
+  returns `None` (never raises) when the pane is still running, the
+  session is gone, tmux is unreachable, or the exit status was never
+  retained (tmux's factory-default `remain-on-exit off` tears a dead
+  pane down immediately, so the common case is simply "nothing left to
+  ask" -- the caller needs `remain-on-exit on` for a durable answer).
+- `wait_for_attention`'s bell-flag stickiness (reading the flag does not
+  clear it -- an agent polling in a loop can get `True` forever from a
+  stale bell) is now stated in the MCP tool description, the CLI `--help`
+  text, and the underlying library docstrings already carried it
+  (`bell.poll_bell_flag()`/`wait_for_bell()`) but neither surface's own
+  docs repeated the warning where an agent would actually see it.
+
+### Changed
+
+- **MCP `wait_for_attention`'s default `timeout` is now 30 seconds**
+  (was `None`, wait forever). An MCP tool call is a single request/
+  response round trip made by an unsupervised agent with no Ctrl-C --
+  unlike a human-invoked CLI command (`tmux-kit wait`, unchanged, still
+  defaults to waiting forever, which is the correct default for an
+  interactive invocation a human can interrupt) or a deliberate direct
+  library call (`tmux_kit.api.wait_for_attention()` /
+  `tmux_kit.bell.wait_for_bell()`, both unchanged). Waiting forever
+  remains available at the MCP surface too -- pass `timeout=None`
+  explicitly -- but it is now an opt-in, not the default a caller falls
+  into by omission.
+
+### Considered, not built
+
+- **A bell-flag "acknowledge/clear" mechanism**, so a caller could
+  positively clear a stale `True` after acting on it, instead of relying
+  on re-reading `read`/`search` to distinguish a new bell from a stale
+  one. Deferred: tmux has no first-class "clear this window's bell flag"
+  command short of switching the client's attached window (not
+  applicable to a detached, agent-managed session) -- a real ack
+  mechanism needs its own design (what actually clears the tmux-native
+  flag, keyed by what) and its own tests, not a bolt-on under this
+  release's time budget. Documented the stickiness hazard everywhere an
+  agent will read it instead (see Added, above); worth its own
+  follow-up.
+- **Renaming the CLI's `list`/`wait` back to `list_sessions`/
+  `wait_for_attention`** to literally satisfy the README's (now-corrected)
+  parity claim. Rejected: these are shipped, tested command names on a
+  library already at 0.3.x: the ergonomic case for a short CLI verb
+  (typed by a human, in a shell) is real and different from an MCP tool
+  name (chosen once, by a client library, never typed), and renaming a
+  stable CLI surface to make a documentation sentence literally true is
+  backward for a patch release. The honest-mapping fix (see Fixed,
+  above) resolves the actual defect -- the false claim -- without an
+  unrelated breaking change.
+
+### Verified
+
+- Full suite (`uv run pytest -v`), all extras installed (dev + cli +
+  mcp): 234 passed. All incident/rail tests (presence, cgroup-escape,
+  differential harness, `test_rails.py`'s run-shell/import-purity/
+  isolation rails) unchanged and green -- none of the fixes above touch
+  their assertions.
+
 ## 0.3.1
 
 A manual, direct-call security review of 0.3.0's new deny-by-default MCP

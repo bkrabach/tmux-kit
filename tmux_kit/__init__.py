@@ -84,6 +84,7 @@ from tmux_kit.api import (
     configure,
     default_socket_dir,
     doctor,
+    exit_code,
     is_running,
     kill,
     list_sessions,
@@ -96,6 +97,7 @@ from tmux_kit.api import (
     stop,
     wait_for_attention,
 )
+from tmux_kit.isolation import isolated_tmux_server
 
 __all__ = [
     "DoctorReport",
@@ -106,7 +108,9 @@ __all__ = [
     "configure",
     "default_socket_dir",
     "doctor",
+    "exit_code",
     "is_running",
+    "isolated_tmux_server",
     "kill",
     "list_sessions",
     "page",

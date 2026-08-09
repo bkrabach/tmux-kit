@@ -108,22 +108,55 @@ def tmux_env(socket_dir: str | None) -> dict[str, str] | None:
         the given directory. Copying (not replacing) preserves PATH,
         HOME, and everything else the subprocess needs.
 
-        Also removes `TMUX` from the returned environment. tmux gives `$TMUX`
-        (set whenever a process is a descendant of an *attached* tmux client)
-        priority over `TMUX_TMPDIR` when resolving which server socket to
-        talk to -- if it were left in place, a muxplex process that happens
-        to be a descendant of some other tmux client (e.g. started manually
-        from inside a tmux pane while debugging) would silently ignore this
-        override and keep talking to that other server. The muxplex *service*
-        itself is never an attached tmux client, so this is a no-op in the
-        normal (systemd/launchd) deployment -- it only matters for robustness
-        in atypical invocation contexts.
+        **`env.pop("TMUX", None)` below is LOAD-BEARING, not defensive
+        polish -- read this before touching it.** tmux gives an inherited
+        `$TMUX` (set whenever a process is a descendant of an *attached*
+        tmux client) priority over `TMUX_TMPDIR` when resolving which
+        server socket to talk to. If this line were removed or made
+        conditional, a caller of `run_tmux()` that happens to be a
+        descendant of some other tmux client (e.g. this process was
+        started manually from inside a tmux pane while debugging, or --
+        the exact incident class this matters for -- an agent inside a
+        tmux pane invoking this library) would silently ignore this
+        function's `TMUX_TMPDIR` override and keep talking to THAT other,
+        ambient server instead -- byte-for-byte the mechanism that
+        destroyed 73 of an operator's live sessions in a real incident
+        (see AGENTS.md's "`TMUX_TMPDIR` is not an isolation boundary", and
+        `tmux_kit/isolation.py`'s module docstring for the verified
+        `-S` > `-L` > `$TMUX` > `TMUX_TMPDIR` > compiled-in-default
+        precedence chain). Unconditionally removing `TMUX` here -- so the
+        subprocess never sees it at all, rather than merely hoping
+        `TMUX_TMPDIR` outranks it -- is what makes this override actually
+        safe: there is no environment shape in which `$TMUX` can leak
+        through and win.
+
+        This is also *why* this module's `run_tmux()` is deliberately NOT
+        required to pass an explicit `-L`/`-S` flag the way
+        `tmux_kit.isolation.isolated_tmux_server()` is (see
+        `tests/test_rails.py`'s isolation rail, which excludes this
+        package's own production contract by name -- that exclusion is a
+        DECIDED position, not an oversight): `-L`/`-S` is the fix for a
+        caller that only sets `TMUX_TMPDIR` and leaves `$TMUX` in place
+        (the actual incident, hand-rolled outside this library); this
+        function never leaves `$TMUX` in place to begin with, so the
+        hazard the rail guards against does not apply to this call site.
+        If a future change ever makes this pop conditional (e.g. "only
+        strip TMUX if X"), that reasoning breaks, and the CI rail's
+        exclusion of `tmux_kit/` stops being correct -- revisit both
+        together, not just one.
+
+        The muxplex *service* itself is never an attached tmux client
+        under normal (systemd/launchd) deployment, so removing `TMUX` is a
+        no-op there -- this matters specifically for atypical invocation
+        contexts (interactive debugging, or any consumer's process that
+        might itself run inside a tmux pane), which is exactly the
+        scenario a caller cannot rule out in general.
     """
     if not socket_dir:
         return None
     env = dict(os.environ)
     env["TMUX_TMPDIR"] = socket_dir
-    env.pop("TMUX", None)
+    env.pop("TMUX", None)  # load-bearing -- see this function's docstring
     return env
 
 
