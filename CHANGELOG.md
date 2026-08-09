@@ -3,6 +3,70 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.3.3
+
+The library's second consumer (concern-sessions, the "sessions" connector
+of the concern engine) contributed `tmux_kit.labels`: pane-harness
+detection for a box running many real tmux sessions, each hosting
+whatever coding tool its human chose. An adversarial review returned
+"merge with changes" -- two proven bugs and one overselling doc claim,
+all fixed before merge (below).
+
+### Added
+
+- **`tmux_kit.labels`** (new module) -- `label_session()` /
+  `label_sessions()`: which agent harness (`amplifier`, `claude-code`,
+  `codex`, or the honest `unknown`) runs in a session's active pane, with
+  evidence (`HarnessLabel.source`: `"process"` | `"snapshot"` | `"none"`).
+  Process-tree first (walks the pane PID's descendants breadth-first,
+  shallowest match wins), narrow snapshot sniff as fallback, never a
+  guess -- see CONSUMERS.md for the full surface and the module's own
+  docstring for the evidence hierarchy.
+
+### Fixed (found by adversarial review, before merge)
+
+- **`process_table()`'s `ps` call truncated long argv on a real
+  terminal.** `ps -A -o args=` (no width flag) derives its column width
+  from the process's CONTROLLING TERMINAL via an ioctl, independent of
+  whether `ps`'s own stdout is piped. A headless CI runner has no
+  controlling terminal (unlimited width, so the bug never showed up
+  there), but a real interactive box -- this library's stated target --
+  does, and a long argv (a deep tmp/session path, a long project
+  directory) got silently truncated, chopping off exactly the basename
+  the matcher needs. Reproduced failing under a real controlling
+  terminal (`test_fake_harness_labels_from_live_process_tree`), fixed by
+  adding `-ww` (unlimited width, accepted by both procps on Linux and BSD
+  `ps` on macOS), reproduced passing.
+- **`_match_cmdline()` matched a harness name appearing ANYWHERE in
+  argv, not just the executable.** Mislabeled routine commands purely
+  because a harness name appeared as a git branch, a log path, a
+  filename, an env-assignment value, or a backup source/destination:
+  `git checkout claude`, `cat /var/log/amplifier`, `vim .../codex`,
+  `AMPLIFIER_HOME=/opt/apps/amplifier some_daemon --serve`, `rsync
+  .../amplifier ...`. Fixed by scoping the match to the EXECUTABLE
+  POSITION only (new `_executable_tokens()` helper), which also
+  correctly resolves a shell/interpreter's direct positional target --
+  the actual kernel-level shape of a shebang'd script
+  (`/bin/sh /path/to/amplifier`, `node /usr/bin/claude`) -- Python's
+  `-m <module>`, a task-runner's `run` subcommand (`uv run amplifier`),
+  and a nested `sh -c "..."` script, while preserving the
+  `amplifier-attention-manager` exact-basename counterexample.
+- **`DEFAULT_SNAPSHOT_PATTERNS` matched prose, not just chrome.** The
+  module's own docstring claimed only "chrome-shaped signatures" (banner/
+  version lines) match, but the patterns were unanchored substring
+  searches: "what do you think of Claude Code v2 compared to amplifier?"
+  and "OpenAI Codex was announced in 2021" both matched. Fixed by
+  anchoring every pattern to the start of a screen line (optional
+  leading whitespace, `re.MULTILINE`) -- a real banner IS the line; a
+  mid-sentence mention is not.
+
+### Verified
+
+- Full suite (`uv run pytest -v`), all extras installed: 264 passed.
+  `-m integration` (17, real isolated `-L` tmux server) and
+  `-m differential` (22) both green. CI green across Python
+  3.11/3.12/3.13, the extras job, and macOS.
+
 ## 0.3.2
 
 Two independent reviews (a seven-lens design council and simulated user
