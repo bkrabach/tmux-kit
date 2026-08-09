@@ -25,6 +25,26 @@ follow-up `tmux kill-server` destroyed all of them.
   for defense-in-depth: it ALSO scrubs ``$TMUX`` from the child's environment
   and points ``TMUX_TMPDIR`` at a private, freshly-created directory, so
   isolation does not depend on a single correctly-remembered flag either.
+  **This defense-in-depth layer is the one that must stay short** (see
+  0.2.2 below) -- it is extra insurance on top of the ``-L`` guarantee,
+  never a substitute for it.
+
+Why this module changed again (0.2.2): the private ``TMUX_TMPDIR`` directory
+above was created under ``tempfile.gettempdir()``, which on macOS resolves to
+a long, per-user, per-boot path like
+``/var/folders/df/<random>/T/tmux-kit-isolated-dir-<random>``. Once tmux
+appends its own ``tmux-<uid>/<socket-name>`` suffix, the full socket path
+blew past the 104-byte ``sun_path`` capacity AF_UNIX sockets are limited to
+on macOS (108 on Linux, where ``/tmp`` is short enough that this never
+surfaced) -- every real tmux invocation failed with ``error connecting to
+...: File name too long``. The defensive private-tmpdir layer -- never the
+``-L`` guarantee itself -- was what broke. Fixed by anchoring that private
+directory under ``/tmp`` (short and present on every platform tmux runs on)
+instead of the platform temp dir, and by validating the resulting path
+against a safety-margined bound *before* ever invoking tmux, so a future
+regression fails loud with an actionable message instead of a cryptic
+kernel errno three layers down. See :func:`_short_tmp_base` and
+:data:`_MAX_SOCKET_PATH_BYTES`.
 
 This is a stdlib-only, core module (see ``tests/test_rails.py``'s
 import-purity rail) -- it is meant to be the obvious thing any consumer,
@@ -55,6 +75,49 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+
+#: macOS's ``sockaddr_un.sun_path`` capacity for AF_UNIX sockets, in bytes.
+#: Linux's is looser (108), but the tighter, cross-platform bound is what
+#: gets enforced here -- unconditionally, regardless of which platform is
+#: actually running this code -- so a path that only gets exercised in a
+#: Linux dev/test run can never quietly regress into something that
+#: explodes the next time it runs on macOS (see 0.2.2 module docstring).
+_MACOS_UNIX_SOCKET_PATH_LIMIT = 104
+
+#: Headroom below the raw kernel limit above. We can't hand-verify the
+#: exact byte count of every future ``prefix=`` a caller might pass, so
+#: this bound is checked with margin to spare rather than shaved to the
+#: wire.
+_SOCKET_PATH_SAFETY_MARGIN = 8
+
+_MAX_SOCKET_PATH_BYTES = _MACOS_UNIX_SOCKET_PATH_LIMIT - _SOCKET_PATH_SAFETY_MARGIN
+
+
+def _short_tmp_base() -> str:
+    """A short, platform-stable base directory for the private
+    ``TMUX_TMPDIR`` this module creates.
+
+    Deliberately NOT ``tempfile.gettempdir()``: on macOS that resolves to a
+    long, per-user, per-boot path under ``/var/folders/<random>/T`` (often
+    50+ bytes on its own), which is exactly what blew the platform's
+    104-byte AF_UNIX ``sun_path`` limit once tmux appended its own
+    ``tmux-<uid>/<socket-name>`` suffix (see 0.2.2 module docstring).
+    ``/tmp`` is short, POSIX-standard, and present on every platform tmux
+    itself runs on -- fall back to ``tempfile.gettempdir()`` only if
+    ``/tmp`` genuinely isn't there.
+    """
+    return "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+
+
+def _tmux_socket_path(socket_dir: str, socket_name: str) -> str:
+    """The full socket path tmux itself will construct for ``-L
+    socket_name`` with ``TMUX_TMPDIR=socket_dir`` -- ``<dir>/tmux-<uid>/<name>``.
+
+    Used to validate the path length *before* ever invoking tmux, so a
+    too-long path fails loud with an actionable message here instead of a
+    cryptic ``File name too long`` errno from deep inside a subprocess.
+    """
+    return os.path.join(socket_dir, f"tmux-{os.getuid()}", socket_name)
 
 
 def _scrubbed_env(tmux_tmpdir: str) -> dict[str, str]:
@@ -128,10 +191,18 @@ async def isolated_tmux_server(
        (see module docstring). Unique per invocation, so concurrent callers
        (parallel test workers, parallel agents) can never collide on the
        same socket name.
-    2. A private, freshly-created ``TMUX_TMPDIR`` (``tempfile.mkdtemp``),
-       torn down with the server -- the socket file itself lives nowhere
-       near the ambient server's directory.
+    2. A private, freshly-created ``TMUX_TMPDIR`` (``tempfile.mkdtemp``,
+       anchored under :func:`_short_tmp_base` rather than the platform temp
+       dir -- see 0.2.2 module docstring), torn down with the server -- the
+       socket file itself lives nowhere near the ambient server's
+       directory.
     3. ``$TMUX`` scrubbed from the child environment on every call.
+
+    Before yielding, the resulting socket path is checked against
+    :data:`_MAX_SOCKET_PATH_BYTES`; a path that would exceed it raises
+    ``ValueError`` immediately (naming the offending path and byte count)
+    rather than letting tmux fail with an opaque ``File name too long``
+    once ``run()`` is actually called.
 
     Teardown runs a ``kill-server`` against this server's own socket
     (errors from "no server was ever started" are swallowed -- there is
@@ -140,7 +211,18 @@ async def isolated_tmux_server(
     the ``async with`` block raised.
     """
     socket_name = f"{prefix}-{uuid.uuid4().hex[:12]}"
-    socket_dir = tempfile.mkdtemp(prefix=f"{prefix}-dir-")
+    socket_dir = tempfile.mkdtemp(prefix=f"{prefix}-dir-", dir=_short_tmp_base())
+    expected_path = _tmux_socket_path(socket_dir, socket_name)
+    path_bytes = len(expected_path.encode("utf-8"))
+    if path_bytes > _MAX_SOCKET_PATH_BYTES:
+        shutil.rmtree(socket_dir, ignore_errors=True)
+        raise ValueError(
+            f"Isolated tmux socket path would be {path_bytes} bytes "
+            f"({expected_path!r}), exceeding the {_MAX_SOCKET_PATH_BYTES}-byte "
+            "safe bound for AF_UNIX sun_path (macOS caps at "
+            f"{_MACOS_UNIX_SOCKET_PATH_LIMIT}, Linux at 108). Pass a shorter "
+            "prefix= to isolated_tmux_server()."
+        )
     server = IsolatedTmuxServer(socket_name=socket_name, socket_dir=socket_dir)
     try:
         yield server

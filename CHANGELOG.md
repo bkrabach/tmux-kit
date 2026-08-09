@@ -3,6 +3,62 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.2.2
+
+CI regression: `test-macos` failed all four `tests/test_isolation.py` real-tmux
+tests with `RuntimeError: error connecting to /private/var/folders/.../T/
+tmux-kit-isolated-dir-.../tmux-501/tmux-kit-isolated-... (File name too
+long)`. Root cause confirmed: AF_UNIX `sockaddr_un.sun_path` is capped at
+104 bytes on macOS (108 on Linux). `isolated_tmux_server()`'s private,
+defense-in-depth `TMUX_TMPDIR` directory (added in 0.2.1) was created under
+`tempfile.gettempdir()`, which on macOS resolves to a long, per-user,
+per-boot path (`/var/folders/<random>/T`, 50+ bytes on its own). Once tmux
+appended its own `tmux-<uid>/<socket-name>` suffix, the full path blew past
+104 bytes on every real macOS invocation; Linux never showed the failure
+because `/tmp` is short there by default. Confirmed on a real Mac
+(`ssh brians-macbook-pro-os`): the CI-reported path was 127 bytes.
+
+Re-verified the precedence rule from 0.2.1 still holds and is the actual
+isolation guarantee: an explicit `-L` alone already overrides an inherited
+`$TMUX`; the private `TMUX_TMPDIR` is defense-in-depth on top of that, not
+the boundary itself. This release fixes the defense-in-depth layer without
+touching the guarantee.
+
+### Fixed
+
+- **`isolated_tmux_server()`'s private `TMUX_TMPDIR` now anchors under
+  `/tmp`** (via the new `_short_tmp_base()`, falling back to
+  `tempfile.gettempdir()` only if `/tmp` genuinely doesn't exist) instead of
+  the platform temp dir, keeping the resulting socket path well under the
+  104-byte macOS `sun_path` cap on both platforms. With the default prefix
+  the real path length is ~75 bytes (was 127 on the failing macOS CI run).
+- **New fail-loud guard**: before ever invoking tmux, the constructed
+  socket path (`<TMUX_TMPDIR>/tmux-<uid>/<socket-name>`, matching tmux's
+  own construction) is checked against a safety-margined bound
+  (`_MAX_SOCKET_PATH_BYTES = 104 - 8`, enforced unconditionally regardless
+  of which platform is running the code -- Linux's looser 108-byte limit
+  is never used as the check, so a path that would only break macOS can't
+  slip through on a Linux-only dev/test run). A caller-supplied `prefix=`
+  long enough to blow the bound now raises `ValueError` immediately, naming
+  the offending path and byte count, instead of failing three layers down
+  inside a tmux subprocess with a bare "File name too long".
+
+### Added
+
+- `tests/test_isolation.py`: `test_default_prefix_socket_path_stays_within_macos_sun_path_bound`
+  pins the default-prefix path length as a regression guard (checked
+  against the tighter macOS bound even when the suite runs on Linux, per
+  above); `test_overlong_prefix_raises_before_ever_touching_tmux` and two
+  supporting unit tests for the new `_short_tmp_base()` / `_tmux_socket_path()`
+  helpers.
+
+### Verified
+
+- Full suite (`uv run pytest -v`): 160 passed, 2 skipped, on both Linux
+  and a real macOS host (`ssh brians-macbook-pro-os`, macOS 26.6, tmux
+  3.6a) -- including all four previously-failing `test_isolation.py`
+  real-tmux tests.
+
 ## 0.2.1
 
 A real incident: an agent probing tmux's `remain-on-exit` behavior set

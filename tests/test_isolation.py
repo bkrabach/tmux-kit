@@ -13,6 +13,18 @@ reproduces the EXACT mechanism -- a session "pretending" to be an attached
 tmux client via a crafted ``$TMUX`` -- entirely against two throwaway,
 self-created servers. It never touches any real/ambient/production tmux
 server on the machine running this suite.
+
+0.2.2: the section below headed "socket path length" was added after
+`test-macos` CI failed with ``File name too long`` -- the private
+``TMUX_TMPDIR`` this module creates was anchored under macOS's long,
+per-user ``/var/folders/.../T`` temp dir, blowing the 104-byte AF_UNIX
+``sun_path`` limit once tmux appended its own ``tmux-<uid>/<socket-name>``
+suffix. These tests assert the fix (anchoring under ``/tmp`` instead) holds
+as a byte-length invariant -- deliberately checked against the *tighter*
+macOS bound regardless of which platform is actually running the suite, so
+a regression introduced/tested only on Linux (108-byte limit, easily
+satisfied by an unrelated future change) cannot slip through invisibly and
+only blow up the next time `test-macos` runs.
 """
 
 from __future__ import annotations
@@ -21,7 +33,15 @@ import os
 from pathlib import Path
 
 import pytest
-from tmux_kit.isolation import IsolatedTmuxServer, _scrubbed_env, isolated_tmux_server
+from tmux_kit.isolation import (
+    _MACOS_UNIX_SOCKET_PATH_LIMIT,
+    _MAX_SOCKET_PATH_BYTES,
+    IsolatedTmuxServer,
+    _scrubbed_env,
+    _short_tmp_base,
+    _tmux_socket_path,
+    isolated_tmux_server,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -131,3 +151,54 @@ async def test_isolated_tmux_server_ignores_a_fake_ambient_tmux_env(monkeypatch)
         # still there, killing the isolated server did not reach it.
         survivor = await fake_ambient.run("list-sessions")
         assert "real-operator-session" in survivor
+
+
+# ---------------------------------------------------------------------------
+# Socket path length -- the 0.2.2 macOS `File name too long` regression
+# ---------------------------------------------------------------------------
+
+
+def test_short_tmp_base_returns_an_existing_short_directory():
+    base = _short_tmp_base()
+    assert Path(base).is_dir()
+    # Not a hard contract on the exact value (falls back to
+    # tempfile.gettempdir() if /tmp genuinely doesn't exist), but on any
+    # POSIX box running this suite it must be "/tmp" -- the whole point is
+    # to avoid macOS's long per-user $TMPDIR.
+    assert base == "/tmp"
+
+
+def test_tmux_socket_path_matches_tmux_own_construction():
+    """Pure function, no subprocess: mirrors tmux's own
+    ``<TMUX_TMPDIR>/tmux-<uid>/<socket-name>`` path construction, which is
+    what the module's own docstring and the incident's error message both
+    confirm tmux actually does.
+    """
+    path = _tmux_socket_path("/tmp/some-dir", "some-socket")
+    assert path == f"/tmp/some-dir/tmux-{os.getuid()}/some-socket"
+
+
+async def test_default_prefix_socket_path_stays_within_macos_sun_path_bound():
+    """The regression guard: with the *default* prefix, the real socket
+    path this module constructs must stay comfortably under the safe bound
+    -- checked against the tighter macOS limit unconditionally, so this
+    fails on Linux too if a future change quietly regresses it, instead of
+    only surfacing the next time `test-macos` happens to run.
+    """
+    async with isolated_tmux_server() as server:
+        path = _tmux_socket_path(server.socket_dir, server.socket_name)
+        path_bytes = len(path.encode("utf-8"))
+        assert path_bytes <= _MAX_SOCKET_PATH_BYTES, (
+            f"{path!r} is {path_bytes} bytes, over the "
+            f"{_MAX_SOCKET_PATH_BYTES}-byte safe bound "
+            f"(macOS sun_path cap is {_MACOS_UNIX_SOCKET_PATH_LIMIT})"
+        )
+
+
+async def test_overlong_prefix_raises_before_ever_touching_tmux():
+    """A `prefix=` long enough to blow the bound fails loud with an
+    actionable ValueError at context-manager entry -- never a cryptic
+    tmux-subprocess ``File name too long`` three layers down."""
+    with pytest.raises(ValueError, match="exceeding"):
+        async with isolated_tmux_server(prefix="x" * 200):
+            pytest.fail("must raise before yielding -- body should never run")
