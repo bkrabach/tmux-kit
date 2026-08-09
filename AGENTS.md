@@ -77,6 +77,27 @@ set — and **tmux's socket resolution prefers an inherited `$TMUX` over
 `tmux list-sessions` printed 73 of the operator's real sessions; a
 `tmux kill-server` two lines later destroyed all of them.
 
+**The recovery, recorded here because it cannot be re-derived later.**
+`pending_restore` is consumed as sessions come back, so its count decays
+toward zero and the original figure is unrecoverable from the manifest after
+the fact. Observed directly on the affected host at the time, and quoted in
+the README's incident section:
+
+| Fact | Value |
+|---|---|
+| Sessions destroyed | 73 |
+| Frozen into `pending_restore` | 71 |
+| `detected_at` | 16:33:30, lost epoch `server_pid 1533867` |
+| Restored by `muxplex restore` | 40 |
+| Refused by `muxplex restore` | 12 |
+
+The 2 not in `pending_restore` were the ambient shell and one session
+recreated before the poll cycle ran. Every one of the 12 refusals was the
+same class: the session's real working directory was not `~/dev/<name>`, so
+restoring with the default command would have started the wrong process
+somewhere real. Restore named the true path in each case and did nothing —
+that refusal is the behavior to preserve, not an edge case to smooth over.
+
 Verified against tmux 3.4 on the affected host:
 
 ```
