@@ -3,6 +3,41 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.3.4
+
+### Removed
+
+- **`tmux_kit.labels`** (added in 0.3.3, removed here). It was pane-harness
+  detection: `label_session()` / `label_sessions()` pattern-matched process
+  argv and pane-snapshot chrome against three hardcoded product names
+  (`amplifier`, `claude-code`, `codex`) to guess which AI coding tool ran in
+  a session's active pane.
+
+  This is a **scope removal, not a defect fix -- the code worked as
+  documented and its adversarial-review-fixed bugs stayed fixed.** It does
+  not belong in this library: every other module here answers "how do I
+  drive tmux correctly," a question with the same answer for every
+  consumer. `labels` answered "which of three specific AI products is this,"
+  a question a team running aider, goose, cursor-agent, or a bare shell
+  answers differently -- that makes it application policy, not tmux
+  mechanism (see AGENTS.md's new "Scope" section for the full litmus test).
+  It was also the library's only heuristic (everything else here is
+  deterministic) and its own maintenance treadmill: product names, argv
+  shapes, and banner text all drift, bolted onto code that should be the
+  slowest-moving in the repo.
+
+  Removed: `tmux_kit/labels.py`, `tests/test_labels.py`, and its row in
+  `tmux_kit/CONSUMERS.md`'s public-surface table. It was never re-exported
+  at the top level (`import tmux_kit`), so no `__init__.py` change was
+  needed. Nothing else in this package imported it.
+
+  0.x carries no semver promise (see AGENTS.md); this is exactly the kind
+  of change that promise exists to allow. Its natural home is the
+  consuming application that needs harness detection -- build it there,
+  where the label table can be shaped for whatever tools that team
+  actually runs. Anyone pinning `tmux-kit==0.3.3` keeps the module; a
+  pin bump to `0.3.4` is what removes it.
+
 ## 0.3.3
 
 The library's second consumer (concern-sessions, the "sessions" connector
