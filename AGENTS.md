@@ -114,6 +114,44 @@ call — a library-only guard would have missed this incident entirely, since
 the kill never went through `tmux_kit` at all; it was a hand-written shell
 command.
 
+## The MCP server's destructive verbs are deny-by-default (0.3.0)
+
+The incident above ("`TMUX_TMPDIR` is not an isolation boundary") is what an
+agent with raw tmux access does when it hand-rolls a command. `tmux_kit.mcp_server`
+hands tmux control to *precisely* that class of caller — an agent, over MCP,
+with no human reviewing each individual call. Before 0.3.0, its `stop`/`kill`
+tools called `tmux_kit.api.stop()`/`kill()` directly with no check at all:
+any session name reachable via `list_sessions` could be stopped or killed by
+any MCP client connected to the server process.
+
+`stop`/`kill` are now deny-by-default, gated by a policy the OPERATOR who
+launches the server supplies via environment variables — never by the calling
+agent, and never grantable by any parameter on the tool call itself:
+
+```
+TMUX_KIT_MCP_STOP_ENABLED=true
+TMUX_KIT_MCP_STOP_ALLOW=demo-*,scratch-*      # comma-separated globs
+TMUX_KIT_MCP_KILL_ENABLED=true
+TMUX_KIT_MCP_KILL_ALLOW=demo-*
+```
+
+Both tiers default fully disabled; `stop` and `kill` are independently
+configurable so an operator can permit a wider blast radius for the
+recoverable verb (`stop`, Ctrl-C) than the unrecoverable one (`kill`,
+kill-session). The mechanism is `tmux_kit.keys.destructive_action_allowed()`
+(a generalization of the existing `input_allowed_for_session()` fence) —
+**read `tmux_kit/mcp_server.py`'s module docstring before assuming this fence
+is total.** It is not: it gates only these two MCP tools (the CLI and any
+direct library call remain exactly as unguarded as before — a human typing a
+CLI command already holds the same OS-level authority to run `tmux
+kill-session` directly), it is one global policy per server *process* (not
+per connected client), and its strength is exactly the operator's glob
+choice — an allowlist of `"*"` provides no protection at all. It is also NOT
+the deferred `Sender`/`SendPolicy` typed authorization object below — that
+general policy layer remains open for a second real consumer to shape; this
+is a narrower fence scoped to the one surface that hands control to an
+unsupervised caller.
+
 ## The presence record is POSITIVE — never a TTL, never a sweep
 
 `tmux_kit.presence` tracks which tmux sessions are known-alive by **positive

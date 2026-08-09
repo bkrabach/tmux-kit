@@ -16,11 +16,69 @@ Run as a stdio server:
 
     python -m tmux_kit.mcp_server
     # or, if installed: tmux-kit-mcp
+
+AUTHORIZATION (0.3.0) -- destructive verbs are deny-by-default
+================================================================
+``stop`` (Ctrl-C, recoverable) and ``kill`` (kill-session, unrecoverable)
+are gated by a policy the OPERATOR who launches this server process
+supplies via environment variables -- never by the calling agent, and
+never granted by any parameter on the tool call itself:
+
+    TMUX_KIT_MCP_STOP_ENABLED=true
+    TMUX_KIT_MCP_STOP_ALLOW=demo-*,scratch-*      # comma-separated globs
+    TMUX_KIT_MCP_KILL_ENABLED=true
+    TMUX_KIT_MCP_KILL_ALLOW=demo-*
+
+Both tiers default to fully disabled: an unset, misspelled, or
+non-``"true"``/``"1"``/``"yes"`` ``_ENABLED`` value refuses EVERY call for
+that verb with ``PermissionError``, regardless of ``_ALLOW``. `stop` and
+`kill` are independently configurable (separate env var pairs) so an
+operator can permit a wider blast radius for the recoverable verb than the
+unrecoverable one -- see ``tmux_kit.keys.destructive_action_allowed()``
+for the exact matching semantics (case-insensitive glob, fail-closed).
+
+Why this exists: an agent given raw tmux access -- this MCP server's exact
+threat model -- hand-rolling a destructive tmux command is precisely the
+incident class recorded in this project's AGENTS.md ("TMUX_TMPDIR is not
+an isolation boundary": 73 real, live tmux sessions destroyed by exactly
+this class of caller believing an isolation mechanism protected it when it
+did not). Before this fence, `stop`/`kill` below called
+``tmux_kit.api.stop()``/``kill()`` directly with NO check at all: any
+session name reachable via `list_sessions` could be stopped or killed by
+any MCP client connected to this process.
+
+WHAT THIS FENCE DOES NOT COVER -- read this before assuming it is total:
+
+- It gates ONLY the two MCP tools below (`stop`, `kill`). Calling
+  ``tmux_kit.api.kill()`` / ``tmux_kit.lifecycle.kill_session()`` directly
+  (as a library), or ``tmux-kit kill`` (the CLI extra), remains exactly as
+  unguarded as before this change -- see ``tmux_kit/lifecycle.py``'s
+  module docstring, unchanged. A human typing a CLI command already holds
+  the same OS-level authority to run `tmux kill-session` directly; the MCP
+  surface is the one that hands a *program* that authority with no human
+  reviewing each individual call, which is why the fence lives here and
+  nowhere else in this repo.
+- It is ONE GLOBAL policy for the whole server PROCESS, not scoped per
+  connected MCP client -- if several MCP clients share one running
+  `tmux-kit-mcp` process, they share its one policy (the same "one global
+  slot, last writer wins" caution ``tmux_kit/CONSUMERS.md`` documents for
+  tmux's `alert-bell` hook).
+- Its strength is exactly the operator's glob choice: an allowlist of
+  ``"*"`` authorizes every session name and provides no protection at all.
+  This fence can express "which session NAMES", nothing about caller
+  identity, intent, or rate.
+- It is NOT the deferred ``Sender``/``SendPolicy`` typed authorization
+  object ``tmux_kit/CONSUMERS.md``'s "NOT in the library yet" section
+  still holds open for a second real consumer to shape -- this is a
+  narrower, MCP-scoped allowlist fence built from the existing
+  ``tmux_kit.keys`` permission-fence primitive, not a replacement for that
+  larger, still-unbuilt policy layer.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import os
 import sys
 
 try:
@@ -32,9 +90,65 @@ except ImportError:
     )
     sys.exit(1)
 
-from tmux_kit import api
+from tmux_kit import api, keys
 
 mcp = FastMCP("tmux-kit")
+
+# ---------------------------------------------------------------------------
+# Deny-by-default authorization fence for the destructive lifecycle verbs
+# (`stop`, `kill`) -- see the module docstring above for the full rationale
+# and its honest coverage boundary.
+# ---------------------------------------------------------------------------
+
+_STOP_ENV_PREFIX = "TMUX_KIT_MCP_STOP"
+_KILL_ENV_PREFIX = "TMUX_KIT_MCP_KILL"
+
+# Env-var values (case/whitespace-insensitive) that count as "enabled".
+# Anything else -- unset, "false", "0", a typo -- is disabled. There is no
+# value that means "enabled" by accident.
+_ENABLED_TRUE_VALUES = frozenset({"1", "true", "yes"})
+
+
+def _policy_from_env(prefix: str) -> dict:
+    """Build a fail-closed ``{"enabled", "allow"}`` policy dict from the
+    ``{prefix}_ENABLED`` / ``{prefix}_ALLOW`` environment variables.
+
+    Read FRESH on every call (never cached at import/startup time) so a
+    test, or a supervising process that rewrites this server's own
+    environment, sees a policy change take effect on the very next tool
+    call -- no server restart required. ``{prefix}_ALLOW`` is a
+    comma-separated list of glob patterns; empty/whitespace-only entries
+    are dropped.
+    """
+    enabled = (
+        os.environ.get(f"{prefix}_ENABLED", "").strip().casefold()
+        in _ENABLED_TRUE_VALUES
+    )
+    allow_raw = os.environ.get(f"{prefix}_ALLOW", "")
+    allow = [p.strip() for p in allow_raw.split(",") if p.strip()]
+    return {"enabled": enabled, "allow": allow}
+
+
+def _require_authorized(name: str, prefix: str, verb: str) -> None:
+    """Raise ``PermissionError`` unless *prefix*'s policy (see
+    ``_policy_from_env``) authorizes *verb* against session *name*.
+
+    The message names the exact two environment variables an operator
+    would set -- deliberately actionable for whoever is debugging a
+    refusal, since the calling agent itself cannot grant this by any
+    argument on the tool call.
+    """
+    policy = _policy_from_env(prefix)
+    if keys.destructive_action_allowed(name, policy):
+        return
+    raise PermissionError(
+        f"{verb}({name!r}) refused: not authorized by this server's "
+        f"deny-by-default policy. The operator who launched this MCP "
+        f"server must opt in via {prefix}_ENABLED=true and "
+        f"{prefix}_ALLOW=<comma-separated glob patterns matching session "
+        f"names> in this process's environment -- this cannot be granted "
+        f"by the calling agent."
+    )
 
 
 @mcp.tool()
@@ -46,18 +160,25 @@ async def start(name: str, command: str | None = None, cwd: str | None = None) -
     returns.
 
     ARGS:
-        name: session name (not validated by this tool -- pick something
-            unique; a name that collides with a live session fails).
+        name: session name. REJECTED (returned as ``ok=False``, see
+            RETURNS) if it fails tmux-kit's name-charset check, or if it
+            contains '.' -- tmux 3.4 silently mangles '.' to '_' at
+            creation time with no error, which would leave this tool's
+            caller unable to find the session again by the name it asked
+            for. Also fails ordinarily if it collides with a live session.
         command: initial foreground command. Passed to tmux as ONE
             shell-quoted argument, so ';'/'&&' inside it run INSIDE the
             session, not in a wrapping shell. Omit for a bare shell.
         cwd: start directory (tmux's own -c flag).
 
-    RETURNS: {"ok": bool, "error": str | null}. ``ok`` is False (not an
-    exception) for an ordinary failure like "command not on PATH" --
-    check it explicitly.
+    RETURNS: {"ok": bool, "error": str | null}. ``ok`` is False (not a
+    raised exception) for an ordinary failure -- including an invalid or
+    mangle-prone NAME, or "command not on PATH" -- check it explicitly.
     """
-    ok, err = await api.start(name, command, cwd=cwd)
+    try:
+        ok, err = await api.start(name, command, cwd=cwd)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     return {"ok": ok, "error": err}
 
 
@@ -168,9 +289,19 @@ async def stop(name: str) -> str:
     afterward to see whether the command actually stopped. For an
     immediate, unconditional stop of the whole session, use `kill`.
 
-    RETURNS: a short confirmation string. Raises if the session doesn't
-    exist or tmux is unreachable.
+    AUTHORIZATION (deny-by-default): refused with `PermissionError` unless
+    this server's operator set TMUX_KIT_MCP_STOP_ENABLED=true and
+    TMUX_KIT_MCP_STOP_ALLOW=<comma-separated glob patterns matching NAME>
+    in the environment this process was launched with -- there is no
+    argument on this call that can grant that authorization itself. See
+    this module's docstring for exactly what this fence covers and does
+    not.
+
+    RETURNS: a short confirmation string. Raises `PermissionError` if NAME
+    is not authorized (see above); otherwise raises if the session
+    doesn't exist or tmux is unreachable.
     """
+    _require_authorized(name, _STOP_ENV_PREFIX, "stop")
     await api.stop(name)
     return f"sent Ctrl-C to {name!r}"
 
@@ -182,9 +313,21 @@ async def kill(name: str) -> str:
     Use `stop` instead if you want to ask the running command to exit
     gracefully while keeping the session around.
 
-    RETURNS: a short confirmation string. Raises if the session doesn't
-    exist or tmux is unreachable.
+    AUTHORIZATION (deny-by-default): refused with `PermissionError` unless
+    this server's operator set TMUX_KIT_MCP_KILL_ENABLED=true and
+    TMUX_KIT_MCP_KILL_ALLOW=<comma-separated glob patterns matching NAME>
+    in the environment this process was launched with -- configured
+    INDEPENDENTLY of `stop`'s policy (an operator may permit a wider set
+    of sessions to be interrupted than to be destroyed outright). There is
+    no argument on this call that can grant that authorization itself. See
+    this module's docstring for exactly what this fence covers and does
+    not.
+
+    RETURNS: a short confirmation string. Raises `PermissionError` if NAME
+    is not authorized (see above); otherwise raises if the session
+    doesn't exist or tmux is unreachable.
     """
+    _require_authorized(name, _KILL_ENV_PREFIX, "kill")
     await api.kill(name)
     return f"killed {name!r}"
 

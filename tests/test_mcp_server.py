@@ -8,6 +8,8 @@ not just locally.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 pytest.importorskip("mcp")
@@ -81,5 +83,101 @@ async def test_kill_tool_delegates_and_confirms(monkeypatch):
         return None
 
     monkeypatch.setattr(mcp_server.api, "kill", fake_kill)
+    monkeypatch.setenv("TMUX_KIT_MCP_KILL_ENABLED", "true")
+    monkeypatch.setenv("TMUX_KIT_MCP_KILL_ALLOW", "demo")
     result = await mcp_server.kill("demo")
     assert "demo" in result
+
+
+async def test_start_tool_returns_ok_false_for_a_mangle_prone_name(monkeypatch):
+    """api.start() now raises ValueError for a '.'-containing name; the
+    MCP tool converts that into the same {"ok": False, "error": ...} shape
+    it already uses for ordinary failures, per its documented contract."""
+    result = await mcp_server.start("build.js")
+    assert result["ok"] is False
+    assert "mangle" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# stop/kill authorization fence -- deny-by-default, operator-configured via
+# environment, never grantable by the calling agent itself.
+# ---------------------------------------------------------------------------
+
+
+async def test_stop_denied_by_default(monkeypatch):
+    monkeypatch.delenv("TMUX_KIT_MCP_STOP_ENABLED", raising=False)
+    monkeypatch.delenv("TMUX_KIT_MCP_STOP_ALLOW", raising=False)
+    stop_mock = AsyncMock()
+    monkeypatch.setattr(mcp_server.api, "stop", stop_mock)
+    with pytest.raises(PermissionError):
+        await mcp_server.stop("demo")
+    stop_mock.assert_not_awaited()
+
+
+async def test_kill_denied_by_default(monkeypatch):
+    monkeypatch.delenv("TMUX_KIT_MCP_KILL_ENABLED", raising=False)
+    monkeypatch.delenv("TMUX_KIT_MCP_KILL_ALLOW", raising=False)
+    kill_mock = AsyncMock()
+    monkeypatch.setattr(mcp_server.api, "kill", kill_mock)
+    with pytest.raises(PermissionError):
+        await mcp_server.kill("demo")
+    kill_mock.assert_not_awaited()
+
+
+async def test_stop_allowed_when_enabled_and_name_matches(monkeypatch):
+    monkeypatch.setenv("TMUX_KIT_MCP_STOP_ENABLED", "true")
+    monkeypatch.setenv("TMUX_KIT_MCP_STOP_ALLOW", "demo-*")
+    stop_mock = AsyncMock()
+    monkeypatch.setattr(mcp_server.api, "stop", stop_mock)
+    result = await mcp_server.stop("demo-1")
+    assert "demo-1" in result
+    stop_mock.assert_awaited_once_with("demo-1")
+
+
+async def test_stop_denied_when_enabled_but_name_does_not_match(monkeypatch):
+    monkeypatch.setenv("TMUX_KIT_MCP_STOP_ENABLED", "true")
+    monkeypatch.setenv("TMUX_KIT_MCP_STOP_ALLOW", "demo-*")
+    stop_mock = AsyncMock()
+    monkeypatch.setattr(mcp_server.api, "stop", stop_mock)
+    with pytest.raises(PermissionError):
+        await mcp_server.stop("production-db")
+    stop_mock.assert_not_awaited()
+
+
+async def test_kill_allowed_when_enabled_and_name_matches(monkeypatch):
+    monkeypatch.setenv("TMUX_KIT_MCP_KILL_ENABLED", "true")
+    monkeypatch.setenv("TMUX_KIT_MCP_KILL_ALLOW", "demo-*")
+    kill_mock = AsyncMock()
+    monkeypatch.setattr(mcp_server.api, "kill", kill_mock)
+    result = await mcp_server.kill("demo-1")
+    assert "demo-1" in result
+    kill_mock.assert_awaited_once_with("demo-1")
+
+
+async def test_stop_and_kill_tiers_are_independently_configured(monkeypatch):
+    """Authorizing `stop` for a session must NOT also authorize `kill` for
+    it -- the two verbs are gated by separate env-var pairs on purpose
+    (different blast radius: recoverable vs unrecoverable)."""
+    monkeypatch.setenv("TMUX_KIT_MCP_STOP_ENABLED", "true")
+    monkeypatch.setenv("TMUX_KIT_MCP_STOP_ALLOW", "*")
+    monkeypatch.delenv("TMUX_KIT_MCP_KILL_ENABLED", raising=False)
+    monkeypatch.delenv("TMUX_KIT_MCP_KILL_ALLOW", raising=False)
+
+    stop_mock = AsyncMock()
+    kill_mock = AsyncMock()
+    monkeypatch.setattr(mcp_server.api, "stop", stop_mock)
+    monkeypatch.setattr(mcp_server.api, "kill", kill_mock)
+
+    await mcp_server.stop("anything")
+    stop_mock.assert_awaited_once_with("anything")
+
+    with pytest.raises(PermissionError):
+        await mcp_server.kill("anything")
+    kill_mock.assert_not_awaited()
+
+
+async def test_kill_permission_error_names_the_env_vars_to_set(monkeypatch):
+    monkeypatch.delenv("TMUX_KIT_MCP_KILL_ENABLED", raising=False)
+    monkeypatch.delenv("TMUX_KIT_MCP_KILL_ALLOW", raising=False)
+    with pytest.raises(PermissionError, match="TMUX_KIT_MCP_KILL_ENABLED"):
+        await mcp_server.kill("demo")

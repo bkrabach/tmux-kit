@@ -61,6 +61,15 @@ def test_start_failure_exits_nonzero_with_reason(monkeypatch):
     assert "command not found" in result.output
 
 
+def test_start_rejects_mangle_prone_name_exits_nonzero(monkeypatch):
+    """api.start() (real, unmocked) raises ValueError for a '.'-containing
+    name before ever calling spawn_session -- the CLI catches it and exits
+    1 with the reason, same handling as `rename`'s ValueError below."""
+    result = _runner().invoke(cli_mod.main, ["start", "build.js"])
+    assert result.exit_code == 1
+    assert "mangles" in result.output
+
+
 def test_list_human_and_json(monkeypatch):
     async def fake_list():
         return [

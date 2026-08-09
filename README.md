@@ -79,6 +79,22 @@ pip install 'tmux-kit[cli]'   # -> the `tmux-kit` command (Click)
 pip install 'tmux-kit[mcp]'   # -> tmux_kit.mcp_server:main (MCP stdio server)
 ```
 
+**MCP server: `stop`/`kill` are deny-by-default (0.3.0).** An MCP client is
+an unsupervised agent by construction, so the two destructive lifecycle
+verbs refuse every call with `PermissionError` unless the operator who
+launches the server opts in explicitly:
+
+```bash
+TMUX_KIT_MCP_STOP_ENABLED=true TMUX_KIT_MCP_STOP_ALLOW='demo-*' \
+TMUX_KIT_MCP_KILL_ENABLED=true TMUX_KIT_MCP_KILL_ALLOW='demo-*' \
+  tmux-kit-mcp
+```
+
+`stop` and `kill` are independently configurable. See
+`tmux_kit/mcp_server.py`'s module docstring for exactly what this fence
+covers (only these two MCP tools) and does not (the CLI, and any direct
+library call, remain unguarded, as before).
+
 ```bash
 tmux-kit --help               # every command documents itself for an
 tmux-kit start demo --command "npm run dev"   # agent reading --help cold

@@ -21,6 +21,7 @@ from tmux_kit.keys import (
     ALLOWED_KEYS,
     build_send_key_argv,
     build_send_text_argv,
+    destructive_action_allowed,
     redact_preview,
     session_matches_allowlist,
     session_target,
@@ -135,3 +136,47 @@ def test_matches_allowlist_question_and_bracket_glob_forms():
     assert session_matches_allowlist("job12", ["job?"]) is False
     assert session_matches_allowlist("joba", ["job[abc]"]) is True
     assert session_matches_allowlist("jobd", ["job[abc]"]) is False
+
+
+# ---------------------------------------------------------------------------
+# destructive_action_allowed -- the deny-by-default fence gating the MCP
+# server's `stop`/`kill` tools (see tmux_kit/mcp_server.py).
+# ---------------------------------------------------------------------------
+
+
+def test_destructive_action_denied_when_not_enabled():
+    """Absent/false ``enabled`` denies every name, even a matching allow
+    pattern -- fail closed, never fail open."""
+    assert destructive_action_allowed("alpha", {"allow": ["*"]}) is False
+    assert (
+        destructive_action_allowed("alpha", {"enabled": False, "allow": ["*"]}) is False
+    )
+
+
+def test_destructive_action_denied_by_truthy_non_bool_enabled():
+    """Only the literal boolean True counts -- a truthy string (e.g. from
+    a hand-edited config) must not enable the fence."""
+    assert (
+        destructive_action_allowed("alpha", {"enabled": "true", "allow": ["*"]})
+        is False
+    )
+    assert destructive_action_allowed("alpha", {"enabled": 1, "allow": ["*"]}) is False
+
+
+def test_destructive_action_denied_when_allow_not_a_list():
+    assert (
+        destructive_action_allowed("alpha", {"enabled": True, "allow": "alpha"})
+        is False
+    )
+    assert destructive_action_allowed("alpha", {"enabled": True}) is False
+
+
+def test_destructive_action_allowed_matches_glob_when_enabled():
+    policy = {"enabled": True, "allow": ["demo-*"]}
+    assert destructive_action_allowed("demo-1", policy) is True
+    assert destructive_action_allowed("other", policy) is False
+
+
+def test_destructive_action_allowed_is_case_insensitive_like_the_underlying_fence():
+    policy = {"enabled": True, "allow": ["Demo-*"]}
+    assert destructive_action_allowed("demo-1", policy) is True

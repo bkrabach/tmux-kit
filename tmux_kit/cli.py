@@ -101,13 +101,20 @@ def start(name: str, command: str | None, cwd: str | None) -> None:
 
     RETURNS: "started 'NAME'" on success.
 
-    FAILS WHEN: the command isn't on PATH, or tmux otherwise refuses (its
-    stderr is printed). Does NOT fail just because the session's initial
-    command later exits -- that's `tmux-kit status NAME` -> "finished".
+    FAILS WHEN: NAME is invalid, or contains '.' (tmux 3.4 silently
+    mangles '.' to '_' at creation time with no error -- rejected here
+    up front instead), the command isn't on PATH, or tmux otherwise
+    refuses (its stderr is printed). Does NOT fail just because the
+    session's initial command later exits -- that's `tmux-kit status
+    NAME` -> "finished".
 
     EXIT CODES: 0 success, 1 failure (reason on stderr).
     """
-    ok, err = _run(api.start(name, command, cwd=cwd))
+    try:
+        ok, err = _run(api.start(name, command, cwd=cwd))
+    except ValueError as exc:
+        click.echo(f"failed to start {name!r}: {exc}", err=True)
+        raise SystemExit(1) from exc
     if not ok:
         click.echo(f"failed to start {name!r}: {err}", err=True)
         raise SystemExit(1)

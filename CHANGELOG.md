@@ -3,6 +3,101 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.3.0
+
+A six-lens product review of the 0.2.x facade/CLI/MCP surface found three
+real defects (not opinions): an unguarded destructive-verb surface on the
+MCP server, a race between `start()` returning and a session's pane
+actually having output, and an inconsistency between `start()` and
+`rename()`'s name-mangling guards. All three closed below.
+
+### Fixed
+
+- **The MCP server's `stop`/`kill` tools had no authorization check at
+  all.** `tmux_kit.mcp_server`'s destructive lifecycle verbs called
+  `tmux_kit.api.stop()`/`kill()` directly against any session name reachable
+  via `list_sessions`, with no policy or allowlist gate -- the exact
+  failure mode of an agent with raw tmux access, applied to precisely the
+  surface (MCP) that hands tmux control to that class of caller with no
+  human reviewing each call. This is not a theoretical risk: see AGENTS.md's
+  "`TMUX_TMPDIR` is not an isolation boundary" for a real incident, same
+  day, in which a hand-rolled tmux command destroyed 73 live sessions.
+  `stop`/`kill` are now deny-by-default, gated by an operator-supplied
+  policy (`TMUX_KIT_MCP_STOP_ENABLED`/`_ALLOW`,
+  `TMUX_KIT_MCP_KILL_ENABLED`/`_ALLOW` environment variables -- see
+  `tmux_kit/mcp_server.py`'s module docstring), never grantable by the
+  calling agent itself. `stop` and `kill` are independently configurable
+  (different blast radius: recoverable vs unrecoverable). This is a
+  NARROW, MCP-scoped fence (`tmux_kit.keys.destructive_action_allowed()`,
+  generalizing the existing `input_allowed_for_session()` fence) --
+  explicitly NOT the fuller, still-deferred `Sender`/`SendPolicy` typed
+  authorization object (CONSUMERS.md's "NOT in the library yet"). The CLI
+  and any direct library call remain exactly as unguarded as before --
+  see the module docstring for the full, honest coverage boundary
+  (one global policy per server process, not per client; strength is
+  exactly the operator's glob choice).
+- **`start()` returned before the spawned command had produced any
+  output**, so a `read()` immediately afterward -- the obvious usage this
+  library's own quickstart demonstrates -- could return an empty string
+  even though the command was about to print something. A new user reads
+  that as "it printed nothing" and concludes the library is broken.
+  `api.start()` now best-effort waits (bounded, ~0.5s, polling every
+  ~50ms) for the pane to show output or for the command to have already
+  exited, whichever comes first, before returning on a successful spawn.
+  This is honest best-effort, not a guarantee: a command that takes
+  longer than the budget to print anything still reads back empty
+  immediately afterward, exactly as before -- there is no tmux-native
+  "it printed something" event to wait on, only the pane's own content,
+  so a bounded poll narrows the race for the common case without
+  pretending to close it for an arbitrarily slow command. See
+  `tmux_kit.api._wait_for_pane_ready()`'s docstring.
+- **`start()` lacked the name-mangling guard `rename()` already had.**
+  `rename()` rejects a `new_name` up front if it fails
+  `names.is_valid_session_name()` or would be silently mangled by tmux
+  (`names.is_tmux_stable_name()` -- tmux 3.4 turns '.' into '_' with exit
+  code 0 and no error); `start()` performed no such check, so a session
+  created with a dot in its name (e.g. `build.js`) got silently renamed
+  by tmux, and every later lookup by the original name missed it.
+  `start()` now runs the identical guard, raising `ValueError` before any
+  tmux call -- consistent with `rename()`. The lower-level
+  `spawn.spawn_session()` primitive is UNCHANGED (still unvalidated, by
+  its own documented contract) -- this only tightens the facade's own
+  `start()` entry point, not the primitive muxplex calls directly.
+
+### Added
+
+- `tmux_kit.keys.destructive_action_allowed(name, policy)` -- the
+  deny-by-default allowlist fence described above.
+
+### Changed
+
+- CLI (`tmux-kit start`) and MCP (`start` tool) both now surface a
+  `ValueError` from `api.start()`'s new name validation through their
+  existing failure conventions (CLI: exit 1 with reason on stderr; MCP:
+  `{"ok": False, "error": ...}`) -- neither surface's documented contract
+  for an "ordinary failure" changed shape.
+
+### Considered, not built
+
+- **Exposing `tmux_kit.isolation.isolated_tmux_server()` via the CLI or
+  MCP server.** A reviewer noted this primitive -- the one thing that
+  would have prevented the incident class this release's MCP fence closes
+  -- is unreachable from either surface today. Left out of this change
+  deliberately: it doesn't fit the CLI/MCP's existing verb set (both
+  operate on the caller's own persistent, named sessions; this primitive
+  spins up and tears down a throwaway, differently-socketed server for
+  probing/testing), and its own interface shape (what does "run an
+  isolated tmux session via MCP" even return -- a live handle an agent
+  holds across calls?) is a real design question, not a fence to bolt on
+  under this change's time budget. Worth its own follow-up.
+
+### Verified
+
+- Full suite (`uv run pytest -v`), all extras installed: unit + real-tmux
+  integration + differential, including a NEW real-tmux integration test
+  reproducing the exact start()-then-read() race end-to-end (see the
+  report for captured output).
+
 ## 0.2.2
 
 CI regression: `test-macos` failed all four `tests/test_isolation.py` real-tmux

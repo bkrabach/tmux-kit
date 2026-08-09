@@ -116,6 +116,36 @@ def input_allowed_for_session(name: str, settings: dict) -> bool:
     return session_matches_allowlist(name, allowed)
 
 
+def destructive_action_allowed(name: str, policy: dict) -> bool:
+    """Return True if *policy* authorizes a destructive lifecycle action
+    (session stop/kill) against session *name*.
+
+    Generalizes ``input_allowed_for_session``'s fail-closed contract for a
+    caller whose config isn't muxplex's own ``settings.json`` shape:
+    *policy* must have ``"enabled"`` set to the literal boolean ``True``
+    (anything else -- absent, ``False``, a truthy string like ``"false"``
+    read from a hand-edited file -- denies every name) and ``"allow"`` set
+    to a ``list`` of glob patterns matched via ``session_matches_allowlist``
+    (case-insensitive; an empty list, or a non-list value, denies every
+    name -- fail closed, never fail open).
+
+    This is the fence ``tmux_kit.mcp_server``'s ``stop``/``kill`` MCP
+    tools evaluate before ever calling ``tmux_kit.api.stop()`` /
+    ``tmux_kit.api.kill()`` -- see that module's docstring for exactly
+    what this fence does and does not cover. It is deliberately NARROW:
+    a caller-name-pattern allowlist, nothing more. It is not, and does not
+    replace, the fuller ``Sender``/``SendPolicy`` typed authorization
+    object ``tmux_kit/CONSUMERS.md``'s "NOT in the library yet" section
+    still holds open for a second real consumer to shape.
+    """
+    if policy.get("enabled") is not True:
+        return False
+    allowed = policy.get("allow")
+    if not isinstance(allowed, list):
+        allowed = []
+    return session_matches_allowlist(name, allowed)
+
+
 def session_matches_allowlist(name: str, patterns: list) -> bool:
     """Return True if *name* matches at least one glob pattern in *patterns*.
 

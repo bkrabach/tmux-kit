@@ -50,7 +50,7 @@ at this one instead.
 | `tmux_kit.names` | `is_valid_session_name()`, `is_tmux_stable_name()`, `rename_tmux_session()`, `SESSION_NAME_RE`. |
 | `tmux_kit.presence` | `update_manifest()`, `compute_restore_plan()`, `mark_restored()`. Owns the core presence keys; **your app writes its own keys beside them, in its own state dir** — unknown top-level keys round-trip verbatim (contract-tested). |
 | `tmux_kit.bell` | `poll_bell_flag()`, `wait_for_bell()` (0.2.0 — blocks until a bell rings, doesn't just poll once), `build_alert_bell_hook()`. |
-| `tmux_kit.keys` | send-input argv builders + the permission fence (`input_allowed_for_session()`, `session_matches_allowlist()`, `redact_preview()`, `build_send_text_argv()`, `build_send_key_argv()`). |
+| `tmux_kit.keys` | send-input argv builders + the permission fence (`input_allowed_for_session()`, `session_matches_allowlist()`, `redact_preview()`, `build_send_text_argv()`, `build_send_key_argv()`). (0.3.0) also `destructive_action_allowed()` -- the generalized, deny-by-default allowlist check the MCP server's `stop`/`kill` tools evaluate; see `tmux_kit.mcp_server`'s row below. |
 | `tmux_kit.spawn` | `spawn_session(name, template, *, env)` — caller resolves the template. `env` omitted now consults the installed factory (0.2.0 fix — see CHANGELOG; previously silently ignored it). |
 | `tmux_kit.lifecycle` | (0.2.0, new) `kill_session()`, `interrupt_session()` — spawn's missing counterpart; previously a consumer had to drop to `run_tmux("kill-session", ...)` by hand. |
 | `tmux_kit.cgroup` | `should_escape()`, `wrap_exec_argv()`, `wrap_shell_argv()`, `environment_mode()`, `reset_probe_cache_for_tests()` — the systemd `--scope` escape that keeps sessions alive past the launching unit. |
@@ -63,7 +63,7 @@ stdlib-only base package):**
 | Module | Extra | What it gives you |
 |--------|-------|--------------------|
 | `tmux_kit.cli` | `cli` | A Click CLI (`tmux-kit` console script) over the exact `tmux_kit.api` verbs. |
-| `tmux_kit.mcp_server` | `mcp` | An MCP (stdio) server over the exact same verbs, for agent callers. |
+| `tmux_kit.mcp_server` | `mcp` | An MCP (stdio) server over the exact same verbs, for agent callers. (0.3.0) `stop`/`kill` are deny-by-default: refused with `PermissionError` unless the operator who launched this server opted in via `TMUX_KIT_MCP_STOP_ENABLED`/`_ALLOW` and `TMUX_KIT_MCP_KILL_ENABLED`/`_ALLOW` environment variables -- never grantable by the calling agent. See this module's own docstring for exactly what this fence covers (only these two MCP tools) and does not (the CLI, and direct library/`lifecycle` calls, remain unguarded, as does every other tool). |
 
 ## NOT in the library yet — deferred until a consumer needs them
 
@@ -73,9 +73,17 @@ real consumer shapes them. If you need one, that's the signal to move it — say
 - **`Sender` / `SendPolicy`** typed send-API. The argv builders + fence exist in
   `tmux_kit.keys`, and `tmux_kit.lifecycle` now has raw execute-side primitives
   (`kill_session`, `interrupt_session`) alongside them — but the deny-by-default
-  POLICY object (which sessions may be typed into / killed, under what rule) is
-  still unbuilt. Every 0.2.0 addition in this area is a raw, unguarded primitive,
-  same trust model as `proc.run_tmux()` itself.
+  POLICY object (which sessions may be typed into / killed, under what rule, for
+  every caller) is still unbuilt. `tmux_kit.lifecycle`'s primitives themselves,
+  and every library/CLI call site, remain raw and unguarded, same trust model
+  as `proc.run_tmux()` itself — that has NOT changed in 0.3.0. What 0.3.0 adds
+  is narrower and MCP-scoped only: `tmux_kit.keys.destructive_action_allowed()`
+  plus `tmux_kit.mcp_server`'s own env-var-configured deny-by-default gate on
+  its `stop`/`kill` tools specifically (see that module's docstring) — built
+  because the MCP surface hands tmux control to an unsupervised agent, exactly
+  the class of caller a real incident (see AGENTS.md) proved dangerous. This is
+  a fence for ONE surface, not the general policy object above, which remains
+  open for the second real consumer to shape.
 - **ttyd / embedded-terminal lifecycle.** muxplex still owns it; the seam is
   defined (`§16` of the extraction plan) but not cut. It is gated on YOUR embedded
   human-UX design — how you want people to reach a session is the forcing function.

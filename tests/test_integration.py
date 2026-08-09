@@ -103,6 +103,67 @@ async def test_rename_tmux_session_round_trip(tmux_socket, monkeypatch):
     assert "old_name" not in names
 
 
+async def test_start_then_immediate_read_sees_output_not_empty(monkeypatch):
+    """Regression test for the empty-read-after-start race (0.3.0):
+    ``api.start()``'s bounded post-spawn wait means an immediate
+    ``api.read()`` right after finds the command's real output, not a
+    misleading empty string, against a REAL (privately-socketed) tmux
+    server -- not a mock.
+
+    Uses the facade's OWN isolation mechanism (``TMUX_KIT_SOCKET_DIR`` ->
+    ``proc.tmux_env()``, which scrubs ``$TMUX`` and points ``TMUX_TMPDIR``
+    at a directory unique to this test) rather than
+    ``tmux_kit.isolation.isolated_tmux_server()`` -- that primitive's own
+    ``-L`` socket would bypass the exact code path (``api._ensure_wired()``
+    -> ``proc.set_env_factory()``) this test is proving, and is unrelated
+    to the ambient/prod server either way (see ``tmux_env()``'s own
+    docstring for why scrubbing ``$TMUX`` is what keeps this off any real
+    server regardless of which mechanism is used).
+
+    Deliberately NOT built on pytest's own ``tmp_path`` -- see
+    ``conftest.py``'s own ``_isolate_tmux_socket_dir`` docstring: that
+    fixture resolves to a long, deeply-nested path that can (and, verified
+    while writing this test, DOES on this host) blow tmux's AF_UNIX
+    ``sun_path`` budget once tmux's own ``tmux-<uid>/default`` suffix is
+    appended -- the exact 0.2.2 regression class. ``mkdtemp`` directly
+    under ``/tmp`` stays short, mirroring conftest's own pattern.
+    """
+    import shutil
+    import tempfile
+
+    from tmux_kit import api, proc
+
+    socket_dir = tempfile.mkdtemp(prefix="tmux-kit-race-test-", dir="/tmp")
+    monkeypatch.setenv("TMUX_KIT_SOCKET_DIR", socket_dir)
+    proc.set_env_factory(None)
+    name = "kit-integ-race"
+    try:
+        # ``; sleep 5`` keeps the session alive after the echo -- without
+        # it, the pane's command exits and (remain-on-exit off, tmux's
+        # factory default) the session is torn down again almost
+        # instantly, so a slow-to-schedule read() might find nothing left
+        # to read AT ALL rather than proving the race this test targets.
+        # Matches this library's own quickstart example's exact pattern.
+        ok, err = await api.start(name, "echo integration-race-marker; sleep 5")
+        assert ok, err
+        text = await api.read(name)
+        assert "integration-race-marker" in text
+    finally:
+        try:
+            await api.kill(name)
+        except RuntimeError:
+            pass
+        # Tear down the whole private tmux server this test spun up (not
+        # just the one session) via the library's own run_tmux() -- never
+        # a raw, unisolated subprocess call (see test_rails.py's rail).
+        try:
+            await proc.run_tmux("kill-server", env=proc.tmux_env(socket_dir))
+        except RuntimeError:
+            pass
+        proc.set_env_factory(None)
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+
 async def test_poll_bell_flag_sees_a_real_bell(tmux_socket, monkeypatch):
     """poll_bell_flag() against a real tmux server: a manually-set
     `bell-flag` on a background window is detected, matching the

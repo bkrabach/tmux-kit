@@ -37,6 +37,7 @@ import os
 import re
 import shlex
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -184,6 +185,53 @@ class DoctorReport:
 # ---------------------------------------------------------------------------
 
 
+# Best-effort, bounded budget for start()'s post-spawn readiness wait (see
+# _wait_for_pane_ready()'s docstring). Deliberately small: this narrows the
+# empty-read-immediately-after-start race for the common case (a quick
+# command that prints something within a few hundred milliseconds -- e.g.
+# this library's own quickstart example), it does not and cannot close it
+# for a genuinely slow-starting command (a dev server, a large compile).
+_START_READY_POLL_BUDGET = 0.5
+_START_READY_POLL_INTERVAL = 0.05
+
+
+async def _wait_for_pane_ready(
+    name: str,
+    *,
+    budget: float = _START_READY_POLL_BUDGET,
+    interval: float = _START_READY_POLL_INTERVAL,
+) -> None:
+    """Best-effort, TIME-BOUNDED wait for *name*'s pane to either show its
+    first output or have its foreground command already exit -- whichever
+    happens first -- so an immediate ``read()`` right after ``start()``
+    sees real content instead of a misleading empty string for the common
+    case.
+
+    This is honest best-effort, not a guarantee: there is no tmux-native
+    "the command has now printed something" event to wait on, only the
+    pane's captured content itself, so this polls it. A command that
+    takes longer than *budget* to produce any output (a slow-starting dev
+    server, a large compile) will still read back empty immediately after
+    ``start()`` returns -- exactly the pre-existing behavior -- because a
+    longer, unconditional wait would either (a) still not be long enough
+    for an arbitrarily slow command, or (b) make EVERY ``start()`` call
+    pay a large fixed tax for the common fast case. Never raises: both
+    ``observe.capture_pane()`` and ``observe.pane_is_dead()`` already
+    degrade to a safe default (``""`` / ``False``) on any tmux error, per
+    their own docstrings, so a transient failure here is simply treated as
+    "not ready yet" and retried until *budget* elapses.
+    """
+    deadline = time.monotonic() + budget
+    while True:
+        if (await observe.capture_pane(name, 5)).strip():
+            return
+        if await observe.pane_is_dead(name):
+            return
+        if time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(interval)
+
+
 async def start(
     name: str,
     command: str | None = None,
@@ -203,14 +251,48 @@ async def start(
     Omit *command* for a bare interactive shell. *cwd*, if given, is passed
     through tmux's own ``-c`` start-directory flag.
 
-    *name* is NOT validated here -- same contract as
-    ``spawn.spawn_session()`` (see its docstring): an API-boundary caller
-    MUST run it through ``tmux_kit.names.is_valid_session_name()`` first.
+    *name* IS validated here (unlike ``spawn.spawn_session()``, whose own
+    contract deliberately leaves that to the caller -- see its docstring,
+    unchanged): rejected up front, before any tmux call, with
+    ``ValueError`` if it fails ``names.is_valid_session_name()`` or would
+    be silently mangled by tmux (``names.is_tmux_stable_name()`` -- tmux
+    3.4 turns ``.`` into ``_`` at creation time with exit code 0 and no
+    error). This mirrors ``rename()``'s exact guard below, so the two
+    session-naming entry points this facade owns behave consistently: a
+    caller who picks a mangle-prone name finds out immediately, at the
+    call that would have created the mismatch, rather than getting back a
+    session it can never look up again by the name it asked for.
+
+    Before returning on a successful spawn, best-effort waits (bounded,
+    see ``_wait_for_pane_ready()``'s docstring for exactly what this does
+    and does not guarantee) for the new session's pane to show its first
+    output, or for its command to have already exited -- whichever comes
+    first -- so the obvious "start(), then immediately read()" usage this
+    library's own quickstart demonstrates sees real content, not a
+    misleadingly empty string, for the common case of a command that
+    prints something quickly.
 
     Returns ``(ok, error)`` -- see ``spawn_session()``'s docstring for the
     exact success/failure semantics (including the exists-after-nonzero-
     exit TTY-attach tolerance).
+
+    Raises:
+        ValueError: *name* fails validation, before any tmux call is made
+            (same failure class as ``rename()``'s ``new_name`` check).
     """
+    # Validate BEFORE _ensure_wired(): an invalid/mangle-prone name must
+    # fail with no side effect at all -- including not lazily installing
+    # the default env-factory wiring, which would otherwise leak global
+    # state (a real bug found writing this fix's own tests: a caller that
+    # only ever sees the ValueError path still triggered _ensure_wired()'s
+    # first-installed-factory side effect under the old ordering).
+    if not names.is_valid_session_name(name):
+        raise ValueError(f"{name!r} is not a valid session name")
+    if not names.is_tmux_stable_name(name):
+        raise ValueError(
+            f"{name!r} contains '.', which tmux silently mangles to '_' "
+            "at session-creation time -- choose a name without '.'"
+        )
     _ensure_wired()
     parts = ["tmux", "new-session", "-d", "-s", "{name}"]
     if cwd is not None:
@@ -218,7 +300,10 @@ async def start(
     if command:
         parts.append(shlex.quote(command))
     template = " ".join(parts)
-    return await spawn.spawn_session(name, template)
+    ok, err = await spawn.spawn_session(name, template)
+    if ok:
+        await _wait_for_pane_ready(name)
+    return ok, err
 
 
 async def stop(name: str) -> None:

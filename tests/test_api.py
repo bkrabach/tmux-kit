@@ -122,6 +122,7 @@ async def test_start_builds_bare_shell_template_by_default(monkeypatch):
         return (True, None)
 
     monkeypatch.setattr(api.spawn, "spawn_session", fake_spawn_session)
+    monkeypatch.setattr(api, "_wait_for_pane_ready", AsyncMock())
     ok, err = await api.start("demo")
     assert (ok, err) == (True, None)
     assert captured["template"] == "tmux new-session -d -s {name}"
@@ -142,12 +143,101 @@ async def test_start_quotes_a_multiword_command_as_one_shell_token(monkeypatch):
         return (True, None)
 
     monkeypatch.setattr(api.spawn, "spawn_session", fake_spawn_session)
+    monkeypatch.setattr(api, "_wait_for_pane_ready", AsyncMock())
     await api.start("demo", "echo hello from tmux-kit; sleep 300", cwd="/tmp/x y")
 
     tokens = shlex.split(captured["template"])
     assert "echo hello from tmux-kit; sleep 300" in tokens
     assert "-c" in tokens
     assert "/tmp/x y" in tokens
+
+
+# ---------------------------------------------------------------------------
+# start() -- the 0.3.0 name-mangling guard (mirrors rename()'s exact guard)
+# ---------------------------------------------------------------------------
+
+
+async def test_start_rejects_invalid_name_without_calling_spawn(monkeypatch):
+    mock = AsyncMock()
+    monkeypatch.setattr(api.spawn, "spawn_session", mock)
+    with pytest.raises(ValueError):
+        await api.start("-bad")
+    mock.assert_not_awaited()
+
+
+async def test_start_rejects_dot_mangled_name_without_calling_spawn(monkeypatch):
+    mock = AsyncMock()
+    monkeypatch.setattr(api.spawn, "spawn_session", mock)
+    with pytest.raises(ValueError, match="mangles"):
+        await api.start("build.js")
+    mock.assert_not_awaited()
+
+
+async def test_start_accepts_a_name_without_dots(monkeypatch):
+    monkeypatch.setattr(
+        api.spawn, "spawn_session", AsyncMock(return_value=(True, None))
+    )
+    monkeypatch.setattr(api, "_wait_for_pane_ready", AsyncMock())
+    ok, err = await api.start("build_js")
+    assert (ok, err) == (True, None)
+
+
+# ---------------------------------------------------------------------------
+# start() -- wires the post-spawn readiness wait, but only on success
+# ---------------------------------------------------------------------------
+
+
+async def test_start_awaits_wait_for_pane_ready_after_successful_spawn(monkeypatch):
+    monkeypatch.setattr(
+        api.spawn, "spawn_session", AsyncMock(return_value=(True, None))
+    )
+    wait_mock = AsyncMock()
+    monkeypatch.setattr(api, "_wait_for_pane_ready", wait_mock)
+    await api.start("demo")
+    wait_mock.assert_awaited_once_with("demo")
+
+
+async def test_start_does_not_wait_after_a_failed_spawn(monkeypatch):
+    monkeypatch.setattr(
+        api.spawn, "spawn_session", AsyncMock(return_value=(False, "boom"))
+    )
+    wait_mock = AsyncMock()
+    monkeypatch.setattr(api, "_wait_for_pane_ready", wait_mock)
+    ok, err = await api.start("demo")
+    assert (ok, err) == (False, "boom")
+    wait_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_pane_ready() -- the empty-read-after-start race fix, in isolation
+# ---------------------------------------------------------------------------
+
+
+async def test_wait_for_pane_ready_returns_as_soon_as_output_appears(monkeypatch):
+    monkeypatch.setattr(api.observe, "capture_pane", AsyncMock(return_value="hello\n"))
+    pane_is_dead_mock = AsyncMock(return_value=False)
+    monkeypatch.setattr(api.observe, "pane_is_dead", pane_is_dead_mock)
+    await api._wait_for_pane_ready("demo", budget=5.0, interval=0.01)
+    # Returned on the very first poll -- pane_is_dead need not even be
+    # consulted once capture_pane already has non-empty text.
+    assert pane_is_dead_mock.await_count <= 1
+
+
+async def test_wait_for_pane_ready_returns_when_pane_already_dead(monkeypatch):
+    monkeypatch.setattr(api.observe, "capture_pane", AsyncMock(return_value=""))
+    monkeypatch.setattr(api.observe, "pane_is_dead", AsyncMock(return_value=True))
+    # Large budget -- if this returned via the timeout path instead of the
+    # dead-pane path, the test itself would take that long to finish.
+    await api._wait_for_pane_ready("demo", budget=5.0, interval=0.01)
+
+
+async def test_wait_for_pane_ready_gives_up_after_its_budget(monkeypatch):
+    """Honest best-effort: if the pane never shows output and never dies,
+    this returns anyway once the (small, test-supplied) budget elapses --
+    it must not hang or wait indefinitely."""
+    monkeypatch.setattr(api.observe, "capture_pane", AsyncMock(return_value=""))
+    monkeypatch.setattr(api.observe, "pane_is_dead", AsyncMock(return_value=False))
+    await api._wait_for_pane_ready("demo", budget=0.05, interval=0.01)
 
 
 # ---------------------------------------------------------------------------
