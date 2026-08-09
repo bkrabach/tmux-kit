@@ -66,6 +66,54 @@ If a change makes one of these fail, the fix is almost never to weaken the
 assertion — it is to find a different way to implement the feature that
 respects the boundary the rail protects.
 
+## `TMUX_TMPDIR` is not an isolation boundary — `$TMUX` wins unless you pass `-L`/`-S`
+
+A real incident, 2026-08 (see CHANGELOG 0.2.1): an agent probing tmux's
+`remain-on-exit` behavior set `TMUX_TMPDIR` to a fresh directory and believed
+that isolated it from the operator's real tmux server. It did not. The
+agent's shell was itself running inside a tmux pane, so `$TMUX` was already
+set — and **tmux's socket resolution prefers an inherited `$TMUX` over
+`TMUX_TMPDIR` whenever no explicit `-L`/`-S` flag is given.** The probe's own
+`tmux list-sessions` printed 73 of the operator's real sessions; a
+`tmux kill-server` two lines later destroyed all of them.
+
+Verified against tmux 3.4 on the affected host:
+
+```
+$TMUX set, no -L:   TMUX_TMPDIR=/tmp/x tmux list-sessions      -> the 20+ REAL sessions
+$TMUX set, WITH -L: tmux -L some-random-name list-sessions     -> "no such file" (correctly isolated)
+```
+
+**The rule an agent composing a shell command must internalize:** if you are
+running inside a tmux pane (you almost always are, in this ecosystem) and
+you invoke `tmux` for ANY reason — a probe, a one-off diagnostic, a
+throwaway test — an explicit `-L <name>` or `-S <path>` is not optional
+hygiene, it is the ONLY thing that actually redirects you away from the
+ambient server. `TMUX_TMPDIR` alone, `env -u TMUX` alone, a "fresh tmp dir"
+alone — none of these substitute for it if you skip the explicit flag.
+
+**Do not hand-roll this.** Use `tmux_kit.isolation.isolated_tmux_server()` —
+an async context manager that gives you a unique `-L` socket, a scrubbed
+`$TMUX`, a private `TMUX_TMPDIR`, and guaranteed teardown (even on
+exception), so there is nothing left to get wrong:
+
+```python
+from tmux_kit.isolation import isolated_tmux_server
+
+async with isolated_tmux_server() as server:
+    await server.run("new-session", "-d", "-s", "probe")
+    out = await server.run("list-sessions")
+# torn down here, even if the block raised
+```
+
+`tests/test_rails.py`'s `test_tests_and_examples_never_invoke_tmux_without_explicit_isolation`
+enforces this structurally: it fails the build if any test, example, or
+script anywhere in this repo (outside `tmux_kit/`'s own production contract)
+spawns a real `tmux` subprocess without a literal `-L`/`-S` in that same
+call — a library-only guard would have missed this incident entirely, since
+the kill never went through `tmux_kit` at all; it was a hand-written shell
+command.
+
 ## The presence record is POSITIVE — never a TTL, never a sweep
 
 `tmux_kit.presence` tracks which tmux sessions are known-alive by **positive

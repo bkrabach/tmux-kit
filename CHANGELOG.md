@@ -3,6 +3,44 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.2.1
+
+A real incident: an agent probing tmux's `remain-on-exit` behavior set
+`TMUX_TMPDIR` and believed that isolated it from the operator's real tmux
+server. It did not -- the probe was itself running inside a tmux pane, so
+`$TMUX` was set, and tmux prefers an inherited `$TMUX` over `TMUX_TMPDIR`
+whenever no explicit `-L`/`-S` is given. `tmux list-sessions` printed 73
+real sessions; `tmux kill-server` destroyed all of them. See AGENTS.md's
+"`TMUX_TMPDIR` is not an isolation boundary" for the verified mechanism.
+
+A library-only guard (e.g. hardening `run_tmux()`) would have missed this
+entirely -- the kill never went through `tmux_kit`; it was a hand-written
+shell command. This release instead provides a primitive worth reaching
+for, plus a structural CI rail across the whole repo.
+
+### Added
+
+- **`tmux_kit.isolation.isolated_tmux_server()`** -- an async context
+  manager yielding an `IsolatedTmuxServer` (`.run(*args)`) bound to a
+  unique, throwaway `-L` socket, with `$TMUX` scrubbed from the child
+  environment and its own private `TMUX_TMPDIR`, torn down (kill-server +
+  directory removal) even if the `async with` block raises. THE tool to
+  reach for whenever a test, example, script, or agent needs to poke real
+  tmux behavior without any chance of touching an ambient/production
+  server. Stdlib-only, core module (covered by the import-purity rail).
+- **`tests/test_rails.py::test_tests_and_examples_never_invoke_tmux_without_explicit_isolation`**
+  -- a structural (AST-based) rail: fails the build if any test, example,
+  or script anywhere in this repo (everywhere except `tmux_kit/`'s own
+  production contract) spawns a real `tmux` subprocess without a literal
+  `-L`/`-S` in that same call. Recursive from the repo root (not a fixed
+  `[tests/, examples/]` list) so coverage survives code moving to a new
+  directory later (the same lesson `test_exactly_one_run_shell_construction_site_exists`
+  already encodes for the `run-shell` rail).
+- `tests/test_isolation.py` -- unit + real-tmux coverage for the new
+  primitive, including a reproduction of the exact incident mechanism (a
+  crafted `$TMUX` pointing at a throwaway "fake ambient" server) that never
+  touches any real/ambient/production tmux server.
+
 ## 0.2.0
 
 Three independent reviews of `tmux-kit` 0.1.0 named the same blocker: no

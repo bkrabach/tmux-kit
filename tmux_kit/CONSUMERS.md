@@ -55,6 +55,7 @@ at this one instead.
 | `tmux_kit.lifecycle` | (0.2.0, new) `kill_session()`, `interrupt_session()` — spawn's missing counterpart; previously a consumer had to drop to `run_tmux("kill-session", ...)` by hand. |
 | `tmux_kit.cgroup` | `should_escape()`, `wrap_exec_argv()`, `wrap_shell_argv()`, `environment_mode()`, `reset_probe_cache_for_tests()` — the systemd `--scope` escape that keeps sessions alive past the launching unit. |
 | `tmux_kit.api` | (0.2.0, new) the FACADE — `start`, `list_sessions`, `status`, `is_running`, `read`, `page`, `search`, `wait_for_attention`, `stop`, `kill`, `rename`, `doctor`, `configure`, `default_socket_dir`. Re-exported at the top level (`import tmux_kit; tmux_kit.start(...)`). See README's Quickstart and this module's own docstring. |
+| `tmux_kit.isolation` | (0.2.1, new) `isolated_tmux_server()` — an async context manager yielding an `IsolatedTmuxServer` (`.run(*args)`) bound to a unique, throwaway `-L` socket with `$TMUX` scrubbed and its own private `TMUX_TMPDIR`, torn down (kill-server + directory removal) even if the block raises. THE tool to reach for whenever a test, example, script, or agent needs to poke real tmux behavior without any chance of touching an ambient/production server — see its module docstring for the incident that motivated it and the exact `$TMUX`-vs-`-L`/`-S` precedence mechanism. |
 
 **Optional extras (each its own `pyproject.toml` extra, NOT part of the
 stdlib-only base package):**
