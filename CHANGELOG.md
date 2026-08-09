@@ -3,6 +3,49 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.3.1
+
+A manual, direct-call security review of 0.3.0's new deny-by-default MCP
+fence found a fail-closed hole: the fence itself was not total.
+
+### Fixed
+
+- **`tmux_kit.keys.destructive_action_allowed()` and
+  `input_allowed_for_session()` raised `AttributeError` instead of denying
+  when called with `policy`/`settings=None` (or any other non-``dict``
+  shape -- a bare string, list, or int).** `policy=None` -- "no policy
+  configured" -- is the most likely input in a realistic production
+  deployment (an operator who hasn't set any of this server's env vars).
+  A fence whose unconfigured path *raises* is not fail-closed in practice:
+  whether the caller ends up denying or granting the action then depends
+  on that caller's exception handling, which is exactly the ambiguity
+  this fence exists to remove. Both functions now check `isinstance(...,
+  dict)` up front and return `False` for any non-dict input, in addition
+  to the existing checks (missing keys, non-``True`` `enabled`, non-list
+  `allow`). `input_allowed_for_session()` had the identical hole --
+  `destructive_action_allowed()` generalizes it and inherited the bug
+  unchanged; both are fixed together since they share the fail-closed
+  contract by design. No production exploit existed via the MCP surface
+  itself: `mcp_server._policy_from_env()` always builds a well-formed
+  `{"enabled": bool, "allow": list}` dict from the environment (even when
+  every env var is unset), so `stop`/`kill` already refused cleanly with
+  `PermissionError` today. The hole was real, however, for any direct
+  caller of the public `tmux_kit.keys` functions -- a future MCP call
+  site, a second consumer, or a test harness that passes `None`/a
+  malformed shape when no policy/settings exist. The existing contract is
+  unchanged: `enabled`/`input_enabled` must still be the literal `True`,
+  `allow`/`input_allowed_sessions` must still be a list matched via
+  case-insensitive glob, and authorization still comes from
+  operator-supplied environment variables only.
+
+### Added
+
+- Full malformed-input matrix test coverage for both fence functions
+  (`tests/test_keys.py`): `None`, `{}`, wrong top-level types (str/list/
+  int), missing keys, non-`True` `enabled` values, non-list `allow`
+  values, and non-string entries inside `allow` -- every case asserts
+  `False`, never an exception.
+
 ## 0.3.0
 
 A six-lens product review of the 0.2.x facade/CLI/MCP surface found three

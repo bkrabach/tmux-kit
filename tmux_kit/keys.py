@@ -101,6 +101,12 @@ def input_allowed_for_session(name: str, settings: dict) -> bool:
     from the other.
 
     Same fail-closed semantics as the inline check this replaced:
+    - *settings* itself must be a ``dict``. Anything else -- ``None`` (no
+      settings loaded/configured), a stray string/list/int -- denies every
+      name rather than raising. A crash on a malformed or absent config is
+      not a fence: whether it then fails open depends on the caller's
+      exception handling, which is precisely the ambiguity this function
+      exists to remove.
     - ``input_enabled`` must be the literal boolean ``True`` (a truthy
       string like ``"false"`` from a hand-edited settings.json must not
       enable the fence).
@@ -108,6 +114,8 @@ def input_allowed_for_session(name: str, settings: dict) -> bool:
       string, which would substring-match via ``in``) is treated as empty.
     - The actual name/pattern matching is ``session_matches_allowlist``.
     """
+    if not isinstance(settings, dict):
+        return False
     if settings.get("input_enabled") is not True:
         return False
     allowed = settings.get("input_allowed_sessions")
@@ -122,12 +130,20 @@ def destructive_action_allowed(name: str, policy: dict) -> bool:
 
     Generalizes ``input_allowed_for_session``'s fail-closed contract for a
     caller whose config isn't muxplex's own ``settings.json`` shape:
-    *policy* must have ``"enabled"`` set to the literal boolean ``True``
-    (anything else -- absent, ``False``, a truthy string like ``"false"``
-    read from a hand-edited file -- denies every name) and ``"allow"`` set
-    to a ``list`` of glob patterns matched via ``session_matches_allowlist``
-    (case-insensitive; an empty list, or a non-list value, denies every
-    name -- fail closed, never fail open).
+    *policy* itself must be a ``dict`` -- ``None`` (no policy configured,
+    the realistic default when an operator hasn't set any of this
+    server's env vars), a stray string/list/int, or any other non-dict
+    shape denies every name rather than raising ``AttributeError``. A
+    fence whose unconfigured or malformed path *raises* is not fail-closed
+    in practice: whether the caller ends up denying or granting the action
+    then depends on that caller's exception handling, which is exactly the
+    ambiguity this function exists to remove. *policy* must then have
+    ``"enabled"`` set to the literal boolean ``True`` (anything else --
+    absent, ``False``, a truthy string like ``"true"`` read from a
+    hand-edited file -- denies every name) and ``"allow"`` set to a
+    ``list`` of glob patterns matched via ``session_matches_allowlist``
+    (case-insensitive; an empty list, a missing key, or a non-list value,
+    denies every name -- fail closed, never fail open).
 
     This is the fence ``tmux_kit.mcp_server``'s ``stop``/``kill`` MCP
     tools evaluate before ever calling ``tmux_kit.api.stop()`` /
@@ -138,6 +154,8 @@ def destructive_action_allowed(name: str, policy: dict) -> bool:
     object ``tmux_kit/CONSUMERS.md``'s "NOT in the library yet" section
     still holds open for a second real consumer to shape.
     """
+    if not isinstance(policy, dict):
+        return False
     if policy.get("enabled") is not True:
         return False
     allowed = policy.get("allow")

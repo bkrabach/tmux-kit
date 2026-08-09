@@ -22,6 +22,7 @@ from tmux_kit.keys import (
     build_send_key_argv,
     build_send_text_argv,
     destructive_action_allowed,
+    input_allowed_for_session,
     redact_preview,
     session_matches_allowlist,
     session_target,
@@ -180,3 +181,76 @@ def test_destructive_action_allowed_matches_glob_when_enabled():
 def test_destructive_action_allowed_is_case_insensitive_like_the_underlying_fence():
     policy = {"enabled": True, "allow": ["Demo-*"]}
     assert destructive_action_allowed("demo-1", policy) is True
+
+
+# ---------------------------------------------------------------------------
+# destructive_action_allowed / input_allowed_for_session -- the full
+# malformed-input matrix. A fence whose unconfigured or malformed path
+# *raises* is not fail-closed in practice: whether the caller ends up
+# denying or granting the action then depends on that caller's exception
+# handling, which is exactly the ambiguity these functions exist to remove.
+# ``policy=None`` ("no policy configured") is the single most likely input
+# in a real deployment (operator hasn't set any env vars / config file is
+# absent) -- every case below must return False, never raise.
+# ---------------------------------------------------------------------------
+
+# (description, policy_or_settings) -- shared across both fence functions
+# since destructive_action_allowed generalizes input_allowed_for_session's
+# contract and both must reject the same malformed shapes.
+_MALFORMED_POLICIES = [
+    ("none", None),
+    ("empty dict", {}),
+    ("wrong type: bare string", "prod-db"),
+    ("wrong type: bare list", ["*"]),
+    ("wrong type: bare int", 1),
+    ("enabled missing, allow present", {"allow": ["*"]}),
+    ("enabled string 'true' (not literal True)", {"enabled": "true", "allow": ["*"]}),
+    ("enabled int 1 (not literal True)", {"enabled": 1, "allow": ["*"]}),
+    ("enabled True, allow missing", {"enabled": True}),
+    ("enabled True, allow is a string", {"enabled": True, "allow": "demo-*"}),
+    ("enabled True, allow is an int", {"enabled": True, "allow": 1}),
+    ("enabled True, allow is None", {"enabled": True, "allow": None}),
+    (
+        "enabled True, allow has non-string entries only",
+        {"enabled": True, "allow": [1, None, {}]},
+    ),
+]
+
+
+@pytest.mark.parametrize("description,policy", _MALFORMED_POLICIES)
+def test_destructive_action_allowed_never_raises_and_always_denies(description, policy):
+    """Every malformed/absent/hostile policy shape must deny, never raise.
+
+    ``policy=None`` in particular is the realistic default in production
+    (see AGENTS.md's MCP deny-by-default section) -- a caller with no
+    policy configured must get a clean ``False``, not an AttributeError.
+    """
+    assert destructive_action_allowed("prod-db", policy) is False, description
+
+
+@pytest.mark.parametrize("description,policy", _MALFORMED_POLICIES)
+def test_input_allowed_for_session_never_raises_and_always_denies(description, policy):
+    """``input_allowed_for_session`` shares its fail-closed contract with
+    ``destructive_action_allowed`` (the latter generalizes the former) --
+    the same malformed-shape matrix must deny, never raise, here too.
+    """
+    assert input_allowed_for_session("prod-db", policy) is False, description
+
+
+def test_destructive_action_allowed_still_authorizes_a_well_formed_policy():
+    """The fix must not turn the fence into permanent deny -- a genuinely
+    well-formed, enabled policy with a matching pattern still authorizes."""
+    assert (
+        destructive_action_allowed("demo-1", {"enabled": True, "allow": ["demo-*"]})
+        is True
+    )
+
+
+def test_input_allowed_for_session_still_authorizes_a_well_formed_policy():
+    assert (
+        input_allowed_for_session(
+            "demo-1",
+            {"input_enabled": True, "input_allowed_sessions": ["demo-*"]},
+        )
+        is True
+    )
