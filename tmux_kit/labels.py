@@ -30,21 +30,30 @@ Two evidence sources, in strength order:
    deliberately narrow: pane text QUOTING a harness name (e.g. a
    conversation about Claude Code inside an amplifier session) is a known
    false-positive class, so bare product names never match -- only
-   chrome-shaped signatures (banners, version lines). Model names like
-   ``claude-opus-5`` appearing in another harness's chrome must not match.
-   The residual risk is inherent to screen-residue evidence: a pane whose
-   *scrollback quotes* a full banner line after its harness exited can
-   still mislabel -- which is why ``source`` is always reported, so a
-   caller can weigh ``"snapshot"`` evidence more skeptically than
+   chrome-shaped signatures (banners, version lines). "Chrome-shaped" is
+   enforced structurally, not just by wording: every pattern is anchored
+   to the START of a screen line (optional leading whitespace only), so
+   prose that merely MENTIONS a harness name mid-line -- "what do you
+   think of Claude Code v2 compared to amplifier?", "OpenAI Codex was
+   announced in 2021" -- cannot match; a genuine banner IS the line, a
+   quote of one is not. Model names like ``claude-opus-5`` appearing in
+   another harness's chrome must not match. The residual risk is
+   inherent to screen-residue evidence: a pane whose *scrollback quotes*
+   a full banner line, alone on its own line, after its harness exited
+   can still mislabel -- which is why ``source`` is always reported, so
+   a caller can weigh ``"snapshot"`` evidence more skeptically than
    ``"process"`` evidence.
 
 Config is injected, never read (plan section 4.3): the known-harness
 tables below are DEFAULTS a caller may replace per call; nothing here
 reads a settings file. Every tmux invocation goes through
 ``tmux_kit.proc.run_tmux`` (the one door); the only non-tmux subprocess
-is ``ps``, spawned argv-exec with POSIX-portable flags (``-A -o pid=``
-etc. -- header suppression via the ``=`` form works on both procps/Linux
-and BSD/macOS ``ps``, unlike GNU-only ``--no-headers``).
+is ``ps``, spawned argv-exec with POSIX-portable flags (``-A -ww -o
+pid=`` etc. -- header suppression via the ``=`` form works on both
+procps/Linux and BSD/macOS ``ps``, unlike GNU-only ``--no-headers``;
+``-ww`` forces unlimited-width ``args`` output on both -- see
+:func:`process_table`'s docstring for why this is load-bearing, not
+decoration).
 
 Snapshot capture here deliberately omits ``capture-pane -e`` (unlike
 ``tmux_kit.observe.capture_pane``, which preserves ANSI escapes for
@@ -83,10 +92,28 @@ DEFAULT_PROC_BASENAMES: Mapping[str, str] = {
 # Narrow, high-precision screen signatures (see module docstring for why
 # narrow is non-negotiable). (label, compiled pattern) pairs, first hit
 # wins in order.
+#
+# Anchored to the START of a screen line (``^\s*``, re.MULTILINE): a real
+# banner/version/footer line IS the line, possibly indented -- it is
+# never introduced by other prose on the same line. This is what makes
+# "chrome-shaped" a real constraint rather than a claim: prose that
+# merely MENTIONS a harness mid-sentence ("what do you think of Claude
+# Code v2 compared to amplifier?", "OpenAI Codex was announced in 2021")
+# cannot match, because the signature text does not begin the line --
+# only a genuine banner does.
 DEFAULT_SNAPSHOT_PATTERNS: Sequence[tuple[str, re.Pattern[str]]] = (
-    ("claude-code", re.compile(r"Welcome to Claude Code|Claude Code v\d")),
-    ("codex", re.compile(r"OpenAI Codex|Codex CLI v\d")),
-    ("amplifier", re.compile(r"Token Usage \(|Welcome to Amplifier|Amplifier v\d")),
+    (
+        "claude-code",
+        re.compile(r"^\s*(?:Welcome to Claude Code|Claude Code v\d)", re.MULTILINE),
+    ),
+    ("codex", re.compile(r"^\s*(?:OpenAI Codex|Codex CLI v\d)", re.MULTILINE)),
+    (
+        "amplifier",
+        re.compile(
+            r"^\s*(?:Token Usage \(|Welcome to Amplifier|Amplifier v\d)",
+            re.MULTILINE,
+        ),
+    ),
 )
 
 # Default snapshot depth for the sniff: enough to include a TUI's
@@ -138,6 +165,23 @@ async def process_table() -> tuple[dict[int, list[int]], dict[int, str]]:
     (macOS) ``ps`` honor -- GNU-only ``--no-headers`` would fail on
     macOS, which this library's CI runs.
 
+    ``-ww`` forces unlimited-width ``args`` output on both procps
+    (Linux) and BSD (macOS) ``ps``. Without it, ``ps`` derives its
+    column width from the process's CONTROLLING TERMINAL via an ioctl --
+    independent of whether *this* command's own stdout is piped. A
+    headless CI runner has no controlling terminal (unlimited width by
+    default, so truncation never shows up there), but a real
+    interactive box -- this library's stated target -- does, and a long
+    argv (a deep tmp/session path, a long project directory) gets
+    silently cut, chopping off exactly the basename
+    ``_match_cmdline`` needs to match. Confirmed against real ``ps`` on
+    both a Linux box (procps-ng) and macOS (BSD ps): both accept ``-ww``
+    and both truncate ``args=`` to the controlling terminal's width
+    without it. Proven by
+    ``test_fake_harness_labels_from_live_process_tree`` failing under a
+    real controlling terminal and passing once ``-ww`` is added (see
+    CHANGELOG).
+
     Returns empty tables on failure -- callers fall back to the snapshot
     sniff rather than raising (an unreadable process table must not turn
     an observation pass into an exception).
@@ -146,6 +190,7 @@ async def process_table() -> tuple[dict[int, list[int]], dict[int, str]]:
         proc = await asyncio.create_subprocess_exec(
             "ps",
             "-A",
+            "-ww",
             "-o",
             "pid=",
             "-o",
@@ -174,11 +219,111 @@ async def process_table() -> tuple[dict[int, list[int]], dict[int, str]]:
     return children, cmds
 
 
+# A shell env-var-assignment-shaped token (``VAR=value``). A raw ``ps
+# args=`` string can show this as the LEADING token(s) before the actual
+# executable (``VAR=x cmd``, or a `sh -c` script embedding one) -- never
+# the executable itself. Matching its basename would still be a
+# false-positive risk: ``AMPLIFIER_HOME=/opt/apps/amplifier`` splits on
+# ``/`` to a bare ``amplifier`` basename, same as a real entrypoint.
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# POSIX shells. Two distinct invocation shapes both hand off the
+# executable identity to something other than argv[0]: a script FILE as
+# a direct positional argument -- the kernel's shebang line runs
+# ``#!/bin/sh`` as ``/bin/sh <script-path>``, exactly how a shebang'd
+# harness entrypoint is really invoked -- and an inline ``-c <script>``
+# string. Both are handled below; neither makes the shell itself the
+# harness.
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+# Script interpreters commonly invoked with the actual target as a
+# direct positional argument (shebang-less invocation: ``node
+# /usr/bin/claude``). The interpreter itself is never the harness.
+_SCRIPT_INTERPRETERS = frozenset({"node", "deno", "bun", "ruby", "perl"})
+
+# Python, matched separately because it additionally supports ``-m
+# <module>`` (``python -m amplifier``), which is not a positional script
+# path and must be recognized specifically.
+_PYTHON_RE = re.compile(r"^python[23]?(\.\d+)?$")
+
+# Project/task runners whose ``run`` subcommand's argument is the actual
+# target being executed, not the runner itself (``uv run amplifier``).
+_TASK_RUNNERS = frozenset({"uv", "uvx", "pipx"})
+_TASK_RUN_SUBCOMMANDS = frozenset({"run"})
+
+
+def _executable_tokens(cmdline: str) -> list[str]:
+    """Candidate EXECUTABLE-POSITION tokens for *cmdline*, in confidence
+    order -- never every whitespace-split token (see module docstring:
+    a wrong label is worse than no label).
+
+    ``ps``'s ``args=`` output is a flattened, space-joined argv with
+    ambiguous boundaries once a multi-word argument is involved -- this
+    is a conservative heuristic over that string, not a shell parser.
+    Handles the shapes a real process tree contains: a bare executable
+    (``argv[0]``); a shell or interpreter's direct positional target,
+    which is how the kernel ACTUALLY invokes a shebang'd script
+    (``/bin/sh /path/to/amplifier``, ``node /usr/bin/claude``); Python's
+    ``-m <module>`` (``python -m amplifier``); a task-runner subcommand
+    (``uv run amplifier``); and a nested shell ``-c`` script
+    (``sh -c "amplifier serve"``) -- recursing into the nested script's
+    own executable position. A leading ``VAR=value`` shell-assignment
+    token is skipped first (never the executable). Anything this can't
+    confidently resolve degrades to ``argv[0]`` alone: no match there
+    falls through to ``unknown``, the safe direction -- never a guess.
+    """
+    tokens = cmdline.split()
+    i = 0
+    while i < len(tokens) and _ENV_ASSIGNMENT_RE.match(tokens[i]):
+        i += 1
+    if i >= len(tokens):
+        return []
+    exe = tokens[i]
+    exe_base = os.path.basename(exe)
+    rest = tokens[i + 1 :]
+
+    if exe_base in _TASK_RUNNERS:
+        j = 0
+        while j < len(rest) and rest[j].startswith("-"):
+            j += 1
+        if j < len(rest) and rest[j] in _TASK_RUN_SUBCOMMANDS:
+            j += 1
+            while j < len(rest) and rest[j].startswith("-"):
+                j += 1
+            if j < len(rest):
+                return [exe_base, rest[j]]
+        return [exe_base]
+
+    if exe_base in _SHELLS and "-c" in rest:
+        c_index = rest.index("-c")
+        nested = rest[c_index + 1 :]
+        if nested:
+            return [exe_base, *_executable_tokens(" ".join(nested))]
+        return [exe_base]
+
+    is_python = _PYTHON_RE.match(exe_base) is not None
+    if exe_base in _SHELLS or exe_base in _SCRIPT_INTERPRETERS or is_python:
+        j = 0
+        while j < len(rest):
+            tok = rest[j]
+            if is_python and tok == "-m" and j + 1 < len(rest):
+                return [exe_base, rest[j + 1]]
+            if tok.startswith("-"):
+                j += 1
+                continue
+            return [exe_base, tok]
+        return [exe_base]
+
+    return [exe_base]
+
+
 def _match_cmdline(cmdline: str, basenames: Mapping[str, str]) -> str | None:
-    """Label for *cmdline* if any argv token's basename is a known harness
-    entrypoint -- EXACT basename match only (see module docstring)."""
-    for token in cmdline.split():
-        base = os.path.basename(token)
+    """Label for *cmdline* if its EXECUTABLE POSITION's basename is a
+    known harness entrypoint -- scoped matching only, never a bare
+    substring/token scan across the whole argv (see module docstring and
+    :func:`_executable_tokens`)."""
+    for exe in _executable_tokens(cmdline):
+        base = os.path.basename(exe)
         if base in basenames:
             return basenames[base]
     return None

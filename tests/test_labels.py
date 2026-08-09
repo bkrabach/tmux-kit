@@ -64,6 +64,91 @@ def test_caller_supplied_basename_table_wins():
     assert _match_cmdline("mytool serve", {"mytool": "my-harness"}) == "my-harness"
 
 
+# --- executable-position scoping (matcher must not label on ANY argv token) --
+# Working exploits against the unscoped matcher this replaced: a token-scan
+# labeled routine, unrelated commands purely because a harness name appeared
+# ANYWHERE in argv -- e.g. as a git branch, a log path, a filename, an env
+# assignment, or a backup source/destination. None of these are the harness.
+
+
+def test_git_checkout_of_a_branch_named_like_a_harness_does_not_match():
+    assert _match_cmdline("git checkout claude", DEFAULT_PROC_BASENAMES) is None
+
+
+def test_cat_of_a_log_path_containing_a_harness_name_does_not_match():
+    assert _match_cmdline("cat /var/log/amplifier", DEFAULT_PROC_BASENAMES) is None
+
+
+def test_vim_of_a_file_named_like_a_harness_does_not_match():
+    assert _match_cmdline("vim /home/user/notes/codex", DEFAULT_PROC_BASENAMES) is None
+
+
+def test_env_assignment_containing_a_harness_path_does_not_match():
+    # The leading token is a shell env-var assignment, not the executable --
+    # and its basename (after the last "/") still LOOKS like a real
+    # entrypoint, which is exactly the false-positive shape to guard.
+    assert (
+        _match_cmdline(
+            "AMPLIFIER_HOME=/opt/apps/amplifier some_daemon --serve",
+            DEFAULT_PROC_BASENAMES,
+        )
+        is None
+    )
+
+
+def test_rsync_source_and_dest_containing_a_harness_name_does_not_match():
+    assert (
+        _match_cmdline(
+            "rsync -av /data/backups/amplifier /mnt/backup/", DEFAULT_PROC_BASENAMES
+        )
+        is None
+    )
+
+
+def test_interpreter_direct_script_invocation_still_matches():
+    # A harness shipped as a script run via its interpreter directly
+    # (no shebang exec) -- the interpreter itself is never the harness,
+    # its target argument is.
+    assert (
+        _match_cmdline("node /usr/bin/claude", DEFAULT_PROC_BASENAMES) == "claude-code"
+    )
+
+
+def test_python_dash_m_module_invocation_still_matches():
+    assert _match_cmdline("python -m amplifier", DEFAULT_PROC_BASENAMES) == "amplifier"
+    assert (
+        _match_cmdline("python3.12 -m amplifier", DEFAULT_PROC_BASENAMES) == "amplifier"
+    )
+
+
+def test_task_runner_run_subcommand_still_matches():
+    assert _match_cmdline("uv run amplifier", DEFAULT_PROC_BASENAMES) == "amplifier"
+
+
+def test_task_runner_without_run_subcommand_does_not_match():
+    # "uv" has many subcommands whose positional argument is NOT a program
+    # to execute (uv build, uv sync, ...) -- only "run" is special-cased.
+    assert _match_cmdline("uv sync amplifier", DEFAULT_PROC_BASENAMES) is None
+
+
+def test_shell_dash_c_nested_harness_invocation_still_matches():
+    assert (
+        _match_cmdline("sh -c amplifier serve", DEFAULT_PROC_BASENAMES) == "amplifier"
+    )
+
+
+def test_shell_dash_c_nested_env_assignment_does_not_match():
+    # Combines both evasions: shell -c wrapping AND a leading env
+    # assignment inside the nested script.
+    assert (
+        _match_cmdline(
+            "sh -c AMPLIFIER_HOME=/opt/apps/amplifier some_daemon --serve",
+            DEFAULT_PROC_BASENAMES,
+        )
+        is None
+    )
+
+
 # --- process-tree BFS (shallowest match owns the pane) ------------------------
 
 
@@ -115,6 +200,29 @@ def test_bare_product_mention_must_not_match():
     # chrome-shaped signatures (banner/version lines) may label.
     assert (
         _label_from_snapshot("let's discuss codex", DEFAULT_SNAPSHOT_PATTERNS) is None
+    )
+
+
+def test_prose_mentioning_a_version_like_phrase_mid_sentence_must_not_match():
+    # A real chat message quoting BOTH a version-shaped phrase and a
+    # second harness name, mid-sentence -- not a banner. Patterns must be
+    # anchored to line-start, or this reads as a claude-code banner.
+    assert (
+        _label_from_snapshot(
+            "what do you think of Claude Code v2 compared to amplifier?",
+            DEFAULT_SNAPSHOT_PATTERNS,
+        )
+        is None
+    )
+
+
+def test_prose_mentioning_a_banner_phrase_mid_sentence_must_not_match():
+    assert (
+        _label_from_snapshot(
+            "Reading the changelog: OpenAI Codex was announced in 2021.",
+            DEFAULT_SNAPSHOT_PATTERNS,
+        )
+        is None
     )
 
 
