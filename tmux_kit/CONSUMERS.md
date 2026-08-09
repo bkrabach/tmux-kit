@@ -33,6 +33,23 @@ dependencies = [
 incident the extraction exists to prevent. Need a change? Open a PR against the
 `tmux-kit` repo — never a fork.
 
+## What belongs here, and what doesn't
+
+This library holds **tmux mechanism** — how to spawn, observe, and control a
+tmux session correctly. It does not hold **application policy** — decisions
+that reasonably differ between consumers about what to DO with a session, or
+what's running inside one.
+
+If you're deciding whether to upstream something you built in your own app:
+harness-specific, agent-specific, or product-specific knowledge (detecting
+which AI tool is running in a pane, choosing labels/colors for a UI, deciding
+what "done" means for your workflow) belongs in **your** application, not
+here. What qualifies for upstreaming is a tmux mechanism a second, unrelated
+consumer would need in the exact same shape — not a policy your app happens
+to also want. See `AGENTS.md`'s "Scope" section for the litmus test and the
+worked example (`tmux_kit.labels`, added in 0.3.3, removed in 0.3.4 for
+exactly this reason).
+
 ## The public surface (as shipped in 0.2.0) -- THE canonical enumeration
 
 Stdlib-only (this table). Importing `tmux_kit` pulls in NO web server, no

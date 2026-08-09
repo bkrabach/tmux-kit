@@ -6,6 +6,41 @@ tmux sessions without forking that code. See `README.md` for the module map
 and `tmux_kit/CONSUMERS.md` for the dependency contract and public surface.
 This file is the shorter version: what an agent must not break.
 
+## Scope: tmux mechanism, not application policy
+
+Every module here answers "how do I drive tmux correctly" -- `proc`/`spawn`
+create and run it, `observe`/`bell`/`presence` watch it, `names`/`keys`/
+`lifecycle` operate on it safely, `cgroup`/`isolation` keep it alive and
+isolated. None of that requires knowing what is running *inside* a pane.
+
+**The litmus test (borrowed from the ecosystem's own kernel philosophy):
+could two reasonable teams want different behavior here?** If yes, it's
+policy, and policy belongs in the consuming application, not this library.
+A tmux mechanism is a fit for tmux-kit precisely because every consumer
+needs the SAME behavior from it, no matter what they use tmux for.
+
+**The concrete case this rule exists to prevent.** 0.3.3 shipped
+`tmux_kit.labels`, which pattern-matched process argv and banner chrome
+against three hardcoded product names (amplifier, claude-code, codex) to
+guess which AI coding tool was running in a pane. It passed a thorough
+correctness review -- rails held, no new dependency, real bugs found and
+fixed before merge -- and still didn't belong here: a team running aider,
+goose, cursor-agent, or a bare shell wants an entirely different label
+table, so "which harness is this" is a per-consumer policy question, not a
+tmux mechanism. It was also the one HEURISTIC in an otherwise fully
+deterministic library, and a maintenance treadmill of its own -- product
+names, argv shapes, and banner text all drift, bolted onto code that
+should be the slowest-moving in the repo. Removed in 0.3.4 (see
+CHANGELOG): the code worked, and the removal is about scope, not a
+defect.
+
+**The process rule this incident forced.** A new module gets a "does this
+belong here" conversation BEFORE the code exists -- not a correctness
+review after a PR arrives. A correctness review answers "is it safe,
+tested, additive," and will happily pass something that is safe, tested,
+additive, and still the wrong thing to build here. Scope is a design
+question; ask it before implementation starts, not at merge time.
+
 ## `dependencies = []` in `pyproject.toml` is load-bearing, not an oversight
 
 This library is **stdlib-only by contract**. `tests/test_import_smoke.py`'s
