@@ -221,10 +221,62 @@ def update_manifest(
         # Storing them ONLY here (not left behind in `sessions` too) is what
         # makes that safe: a name that isn't in `sessions` can't be found by
         # the same-server branch's tombstone loop in the first place.
+        #
+        # MERGE with any already-pending, not-yet-restored snapshot from an
+        # EARLIER cold start -- never replace it wholesale. Before this fix,
+        # a SECOND cold start (a different server dying again, e.g. a
+        # reboot) silently discarded every entry the FIRST cold start had
+        # frozen but an operator had not yet restored (or explicitly
+        # forgotten via `restore --forget`). That is exactly the silent
+        # sweep this module's own invariant forbids (see AGENTS.md's "the
+        # presence record is POSITIVE -- never a TTL, never a sweep");
+        # nothing may leave pending_restore except by being restored or
+        # explicitly forgotten (mark_restored() already handles both).
+        #
+        # Collision rule: a name lost under BOTH the old pending set and
+        # this cycle's lost_names takes the FRESHER observation -- this
+        # cycle's copy of `sessions[name]` (its state right before its own
+        # server disappeared) is a more accurate snapshot than whatever was
+        # frozen earlier, so it wins the merge (dict-union with the fresh
+        # side applied last).
+        old_pending_sessions: dict[str, Any] = dict(
+            (pending_restore or {}).get("sessions") or {}
+        )
+        newly_lost = {name: sessions[name] for name in lost_names}
+        merged_sessions = {**old_pending_sessions, **newly_lost}
+
+        # detected_at/lost_epoch describe ONE detection event by
+        # construction, but a merged snapshot can now span more than one
+        # cold start. Tradeoff taken here, deliberately: keep describing
+        # the OLDEST still-unresolved entry -- do NOT refresh to `now` on
+        # merge. A downstream staleness gate (e.g. muxplex restore.py's
+        # RESTORE_MAX_AGE_SECONDS check, which reads exactly this top-level
+        # pair to decide whether to refuse a restore without --force) would
+        # otherwise see a genuinely ancient, deliberately-un-actioned entry
+        # look perpetually fresh after every subsequent cold start -- quietly
+        # defeating the one safety net that exists to keep it from restoring
+        # a stale ghost. Keeping the oldest value means a stale entry mixed
+        # into a merged batch requires --force for the WHOLE batch (a
+        # workflow speed bump, fully recoverable) instead of the
+        # alternative's silent, permanent loss of the staleness signal for
+        # old entries (not recoverable). Per-entry timestamps would resolve
+        # this more precisely but are a manifest schema change; the coarser,
+        # conservative default fixes the reported data-loss bug on its own
+        # without one, and is also what keeps a freshly-frozen entry (the
+        # common, no-prior-pending-restore case) byte-identical to before --
+        # see test_cold_start_freezes_lost_sessions_verbatim's differential
+        # pin.
+        if pending_restore and pending_restore.get("detected_at") is not None:
+            detected_at_out = pending_restore["detected_at"]
+            lost_epoch_out = pending_restore.get("lost_epoch")
+        else:
+            detected_at_out = now
+            lost_epoch_out = epoch_rec
+
         pending_restore = {
-            "detected_at": now,
-            "lost_epoch": epoch_rec,
-            "sessions": {name: sessions[name] for name in lost_names},
+            "detected_at": detected_at_out,
+            "lost_epoch": lost_epoch_out,
+            "sessions": merged_sessions,
         }
     # The old epoch's bookkeeping does NOT carry forward -- a session that
     # was live under the OLD server is either (a) also live under the NEW

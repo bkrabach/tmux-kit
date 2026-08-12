@@ -246,6 +246,174 @@ def test_update_manifest_cold_start_no_lost_sessions_leaves_pending_restore_none
 
 
 # ---------------------------------------------------------------------------
+# update_manifest() -- a SECOND cold start must MERGE, never replace
+# (regression test for the 2026-08-12 data-loss incident -- see AGENTS.md's
+# "the presence record is POSITIVE" section and CHANGELOG 0.3.5)
+# ---------------------------------------------------------------------------
+
+EPOCH_C = {
+    "socket_path": "/home/user/.tmux/tmux-1000/default",
+    "server_pid": 333,
+    "inode": 3,
+}
+
+
+def test_second_cold_start_preserves_un_actioned_pending_restore_from_first():
+    """Reproduces the real incident, observed TWICE on a live machine in one
+    day: a tmux server dies (cold start #1) and freezes N sessions into
+    pending_restore. An operator restores SOME of them (`muxplex restore`);
+    the rest are left pending because they legitimately refuse (wrong cwd,
+    deleted dirs -- exactly like the 12 refusals in the original 2026-08
+    incident). A SECOND, unrelated server death/reboot (cold start #2) must
+    not wholesale replace pending_restore with only the newly-lost names --
+    the un-actioned survivors of cold start #1 must still be there
+    afterward. Before the fix in presence.py's cold-start branch, this
+    second cold start discarded them silently: exactly the kind of sweep
+    the module's own "positive record, never a TTL, never a sweep"
+    invariant exists to forbid.
+    """
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_A, "observed_at": 1.0},
+        "sessions": {
+            "a2a": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            "bbs": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            "ccc": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+        },
+        "pending_restore": None,
+        "created_with": {},
+    }
+
+    # Cold start #1: server A dies; server B comes up already running "ddd"
+    # (e.g. a session someone started by hand right after the reboot).
+    manifest, changed1 = update_manifest(manifest, EPOCH_B, ["ddd"], now=1000.0)
+    assert changed1 is True
+    assert set(manifest["pending_restore"]["sessions"]) == {"a2a", "bbs", "ccc"}
+
+    # Operator runs `muxplex restore`: "a2a" comes back; "bbs"/"ccc"
+    # legitimately refuse (wrong cwd / deleted dir, per the real incident)
+    # and stay pending.
+    manifest = mark_restored(manifest, {"a2a"})
+    assert set(manifest["pending_restore"]["sessions"]) == {"bbs", "ccc"}
+
+    # Cold start #2: server B dies (e.g. a reboot for system updates);
+    # server C comes up with NOTHING alive -- "ddd" (only ever live under
+    # B) is newly lost, a completely different name than generation 1's.
+    manifest, changed2 = update_manifest(manifest, EPOCH_C, [], now=2000.0)
+    assert changed2 is True
+
+    pending = manifest["pending_restore"]
+    assert pending is not None
+    assert set(pending["sessions"]) == {"bbs", "ccc", "ddd"}, (
+        "the un-actioned survivors of cold start #1 (bbs, ccc) must survive "
+        "cold start #2 merged alongside the newly-lost 'ddd' -- silently "
+        "discarding bbs/ccc here reproduces the reported data-loss incident"
+    )
+
+
+def test_second_cold_start_fresher_observation_wins_on_name_collision():
+    """Collision rule: if the SAME name is lost under both the earlier
+    pending_restore and this cycle's fresh lost_names, the fresher
+    observation (this cycle's copy of `sessions[name]`) wins -- it reflects
+    the session's state right before ITS server disappeared, which is a
+    more accurate snapshot than the stale one already sitting in
+    pending_restore. A non-colliding name ("bbs") is included too, so this
+    test also fails against the pre-fix wholesale-replace code (which would
+    drop "bbs" entirely), not just check the collision winner in isolation.
+    """
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_B, "observed_at": 500.0},
+        "sessions": {
+            "a2a": {"first_seen_at": 500.0, "last_seen_at": 999.0, "cwd": "/fresh/path"}
+        },
+        "pending_restore": {
+            "detected_at": 100.0,
+            "lost_epoch": EPOCH_A,
+            "sessions": {
+                "a2a": {
+                    "first_seen_at": 1.0,
+                    "last_seen_at": 2.0,
+                    "cwd": "/stale/path",
+                },
+                "bbs": {"first_seen_at": 1.0, "last_seen_at": 2.0},
+            },
+        },
+        "created_with": {},
+    }
+    new_manifest, changed = update_manifest(manifest, EPOCH_C, [], now=2000.0)
+    assert changed is True
+    pending = new_manifest["pending_restore"]
+    assert set(pending["sessions"]) == {"a2a", "bbs"}, (
+        "bbs (un-actioned from the earlier freeze) must survive the merge"
+    )
+    assert pending["sessions"]["a2a"]["cwd"] == "/fresh/path", (
+        "the fresher (this-cycle) observation must win on a name collision"
+    )
+    assert pending["sessions"]["a2a"]["last_seen_at"] == 999.0
+
+
+def test_second_cold_start_keeps_oldest_detected_at_and_lost_epoch():
+    """detected_at/lost_epoch describe the OLDEST still-unresolved entry in
+    a merged snapshot, not "this event" -- refreshing them on every merge
+    would let a genuinely ancient, deliberately-un-actioned entry look
+    perpetually fresh to a downstream staleness gate (e.g. muxplex's
+    RESTORE_MAX_AGE_SECONDS check in restore.py), defeating it entirely.
+    """
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_B, "observed_at": 500.0},
+        "sessions": {"ddd": {"first_seen_at": 500.0, "last_seen_at": 500.0}},
+        "pending_restore": {
+            "detected_at": 100.0,
+            "lost_epoch": EPOCH_A,
+            "sessions": {"bbs": {"first_seen_at": 1.0, "last_seen_at": 2.0}},
+        },
+        "created_with": {},
+    }
+    new_manifest, changed = update_manifest(manifest, EPOCH_C, [], now=2000.0)
+    assert changed is True
+    pending = new_manifest["pending_restore"]
+    assert pending["detected_at"] == 100.0, (
+        "must keep describing the OLDEST outstanding freeze, not refresh to `now`"
+    )
+    assert pending["lost_epoch"]["server_pid"] == EPOCH_A["server_pid"]
+    assert set(pending["sessions"]) == {"bbs", "ddd"}
+
+
+def test_second_cold_start_manifest_with_0_3_4_shaped_pending_restore_still_works():
+    """Schema back-compat: a 0.3.4-written manifest's pending_restore has
+    exactly {detected_at, lost_epoch, sessions} and nothing more -- no new
+    field is required on read, and a SECOND cold start against that
+    legacy-shaped manifest must still merge correctly (not just pass
+    through unchanged). A manifest saved by 0.3.4 must not break on 0.3.5.
+    """
+    legacy_0_3_4_manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_B, "observed_at": 500.0},
+        # "fff" was live under B (recorded the ordinary way, no extra
+        # fields) -- about to be lost when C arrives with nothing alive.
+        "sessions": {"fff": {"first_seen_at": 500.0, "last_seen_at": 500.0}},
+        "pending_restore": {
+            "detected_at": 100.0,
+            "lost_epoch": EPOCH_A,
+            "sessions": {"bbs": {"first_seen_at": 1.0, "last_seen_at": 2.0}},
+        },
+        "created_with": {},
+    }
+    new_manifest, changed = update_manifest(
+        legacy_0_3_4_manifest, EPOCH_C, [], now=2000.0
+    )
+    assert changed is True
+    pending = new_manifest["pending_restore"]
+    assert set(pending["sessions"]) == {"bbs", "fff"}, (
+        "a legacy-shaped pending_restore must still merge correctly across "
+        "a second cold start, not just round-trip unchanged"
+    )
+    assert pending["detected_at"] == 100.0
+
+
+# ---------------------------------------------------------------------------
 # Epoch identity -- socket_path is part of equality (scratch-instance safety)
 # ---------------------------------------------------------------------------
 

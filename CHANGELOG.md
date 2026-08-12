@@ -3,6 +3,75 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.3.5
+
+### Fixed
+
+- **A second cold start silently discarded un-actioned `pending_restore`
+  entries from an earlier cold start -- a real data-loss incident,
+  observed TWICE on a live machine in one day.** `presence.py`'s
+  DIFFERENT-SERVER (cold start) branch of `update_manifest()` REPLACED
+  `pending_restore` wholesale whenever the new cold start itself lost any
+  sessions, instead of merging. Sequence: server A dies, N sessions freeze
+  into `pending_restore`; an operator restores some of them, the rest
+  stay pending because they legitimately refuse (wrong cwd, deleted
+  dirs); a second, unrelated server death (e.g. a reboot) fires another
+  cold start, and the still-pending entries from generation 1 vanished
+  the instant the new cold start had its own newly-lost names to record.
+  Verified on the affected host by diffing manifest backups taken by hand
+  before each incident (81 sessions lost -> 61 restored, 20 remained
+  pending -> a reboot's cold start discarded all 20; a second incident an
+  hour later discarded 4 more the same way). This is exactly the silent
+  sweep AGENTS.md's "the presence record is POSITIVE -- never a TTL,
+  never a sweep" invariant exists to forbid; the bug was in the very code
+  meant to enforce it.
+
+  **The fix:** the cold-start branch now MERGES this cycle's newly-lost
+  sessions into any already-pending, not-yet-restored snapshot, instead
+  of replacing it. Nothing leaves `pending_restore` except by being
+  restored or explicitly forgotten (`restore --forget`) --
+  `mark_restored()` already handled both; only the cold-start freeze
+  itself was destructive.
+
+  - **Collision rule:** a name lost under both the old pending set and
+    this cycle's fresh losses takes the FRESHER (this-cycle) observation
+    -- it reflects the session's actual state right before its own
+    server disappeared, a more accurate snapshot than whatever was frozen
+    earlier.
+  - **`detected_at`/`lost_epoch` tradeoff:** these describe one detection
+    event by construction, but a merged snapshot can now span more than
+    one cold start. Taken deliberately: the merged snapshot keeps
+    describing the OLDEST still-unresolved entry rather than refreshing
+    to "now" on every merge. A downstream staleness gate (e.g. muxplex
+    `restore.py`'s `RESTORE_MAX_AGE_SECONDS` check, which reads exactly
+    this top-level pair to decide whether to refuse a restore without
+    `--force`) would otherwise see a genuinely ancient, deliberately-
+    un-actioned entry look perpetually fresh after every subsequent cold
+    start -- quietly defeating the one safety net that exists to keep it
+    from restoring a stale ghost. The tradeoff: a stale entry mixed into
+    a merged batch requires `--force` for the whole batch (a workflow
+    speed bump, fully recoverable) rather than the alternative's silent,
+    permanent loss of the staleness signal (not recoverable). Per-entry
+    timestamps would resolve this more precisely but are a manifest
+    schema change; not needed to fix the reported data-loss bug, and the
+    coarser default keeps a freshly-frozen entry (the common,
+    no-prior-`pending_restore` case) byte-identical to before --
+    `tests/test_differential_harness.py`'s
+    `test_cold_start_freezes_lost_sessions_verbatim` still pins this.
+  - **No manifest schema change.** `pending_restore`'s shape
+    (`detected_at`, `lost_epoch`, `sessions`) is unchanged; a manifest
+    written by 0.3.4 merges correctly under 0.3.5 with no migration step
+    (see `tests/test_presence.py`'s
+    `test_second_cold_start_manifest_with_0_3_4_shaped_pending_restore_still_works`).
+
+  Regression coverage: `tests/test_presence.py`'s
+  `test_second_cold_start_preserves_un_actioned_pending_restore_from_first`
+  reproduces the exact incident sequence (cold start -> partial restore ->
+  second cold start with different lost names) and fails against the
+  pre-fix code; `test_second_cold_start_fresher_observation_wins_on_name_collision`
+  and `test_second_cold_start_keeps_oldest_detected_at_and_lost_epoch` pin
+  the two tradeoffs above.
+
 ## 0.3.4
 
 ### Removed
