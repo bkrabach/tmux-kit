@@ -397,6 +397,26 @@ async def capture_pane_metadata(session_name: str) -> tuple[int, int, int]:
     Raises RuntimeError if tmux/the session is unreachable (same as
     `run_tmux`) -- callers are expected to have already confirmed the
     session exists via `get_session_list()`.
+
+    That RuntimeError contract needs one guard `run_tmux()` cannot supply.
+    When `-t` does not resolve, `display-message -p` does NOT fail:
+    verified on tmux 3.4, it exits **0** and prints the format string with
+    every `#{...}` expanded to the empty string -- `'\\t\\t\\n'`. `run_tmux()`
+    raises only on a non-zero exit, so it returns that string normally and
+    the parse below is what breaks. Unguarded, `int('')` surfaces as a
+    ValueError from inside a function documented to raise RuntimeError.
+
+    Two ways to reach it, both real:
+
+    - the session genuinely does not exist (raced away between the
+      `get_session_list()` the caller was told to make and this call), and
+    - a caller passing tmux's *exact-match* session form, `=name`, which is
+      a valid SESSION target but not a valid pane target -- so it resolves
+      to nothing even when `name` is a live session.
+
+    Both now raise RuntimeError naming the target, so a caller's existing
+    `except RuntimeError` handles the miss instead of a ValueError escaping
+    two frames up.
     """
     output = await run_tmux(
         "display-message",
@@ -407,7 +427,15 @@ async def capture_pane_metadata(session_name: str) -> tuple[int, int, int]:
     )
     h_str, _, rest = output.partition("\t")
     p_str, _, l_str = rest.partition("\t")
-    return int(h_str.strip()), int(p_str.strip()), int(l_str.strip())
+    try:
+        return int(h_str.strip()), int(p_str.strip()), int(l_str.strip())
+    except ValueError:
+        raise RuntimeError(
+            f"display-message could not resolve target {session_name!r}: "
+            f"tmux exited 0 but expanded every field to empty ({output!r}). "
+            "The session does not exist, or the target is a session-only "
+            "form such as '=name' that is not a valid pane target."
+        ) from None
 
 
 async def capture_pane_window(
