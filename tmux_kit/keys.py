@@ -30,9 +30,43 @@ Security model (see the endpoint in main.py for the enforcement order):
   strings -- ``"*"`` allows every session, ``"amplifier-*"`` allows a
   prefix family. A literal name with no glob metacharacters still matches
   only itself, so existing exact-name configs behave unchanged.
+
+A newline inside literal text is NOT a submission (the CR/LF hazard):
+
+- ``send-keys -l -- "cmd\\n"`` delivers LF (0x0A). Pressing the Enter key
+  delivers CR (0x0D). They are different bytes, and tmux does not convert
+  one into the other on the way into a literal payload.
+- A pane running a shell submits on either, because the kernel line
+  discipline is in canonical mode and ICRNL/line buffering make LF a line
+  terminator. A pane running a RAW-MODE program -- any full-screen TUI,
+  e.g. anything built on crossterm/Ratatui -- submits on CR only. crossterm
+  says so in its own parser (``crossterm/src/event/sys/unix/parse.rs``)::
+
+      b'\\r' => KeyCode::Enter
+      // Issue #371: \\n = 0xA, which is also the keycode for Ctrl+J. The
+      // only reason we get newlines as input is because the terminal
+      // converts \\r into \\n for us. When we enter raw mode, we disable
+      // that, so \\n no longer has any meaning [...]
+
+  In raw mode that guard is false, so the LF is Ctrl+J and is swallowed.
+  There is no error and no visible diff: the text simply sits on the input
+  line looking sent.
+- The failure is worse than a no-op. Unsubmitted text stays in the target's
+  input buffer and PREFIXES whatever is typed next, fusing two independent
+  sends into one nonsense line.
+
+``build_send_text_argv`` is unchanged and still passes *text* through
+verbatim -- a caller that genuinely wants the LF byte keeps it. A caller
+that wants a newline to mean what pressing the key means uses
+``build_send_text_argvs`` (plural), which delivers each newline as a real
+``send-keys <target> Enter`` key event. Neither function decides FOR a
+caller whether a trailing newline should be appended, nor enforces
+``MAX_KEYS`` -- both are caller policy, and the plural builder returns the
+Enter count so the caller can apply its own cap.
 """
 
 import fnmatch
+import re
 
 # Closed allowlist of named special keys an agent may send. These are tmux
 # key names (see tmux(1) "KEY BINDINGS"). Kept deliberately small: enough to
@@ -70,6 +104,12 @@ PREVIEW_CHARS = 16
 #   interactive sequence.
 MAX_TEXT_BYTES = 8192
 MAX_KEYS = 64
+
+# CRLF, a bare CR and a bare LF are each ONE line ending, so each is ONE
+# Enter. The two-character sequence is matched first, deliberately: a CRLF
+# split into two Enters would submit an extra empty line into the target,
+# which in a chat/REPL pane is an accidental empty turn.
+_NEWLINE = re.compile(r"\r\n|\r|\n")
 
 
 def session_target(name: str) -> str:
@@ -232,6 +272,59 @@ def build_send_key_argv(name: str, key: str) -> list[str]:
     if key not in ALLOWED_KEYS:
         raise ValueError(f"key {key!r} is not in the allowed key set")
     return ["send-keys", "-t", session_target(name), key]
+
+
+def split_on_newlines(text: str) -> tuple[list[str], int]:
+    """Split *text* into literal segments and count the line endings between them.
+
+    Returns ``(segments, newline_count)``, where ``len(segments) ==
+    newline_count + 1`` always -- so text with no newline yields one segment
+    and zero newlines. CRLF, a bare CR and a bare LF each count as one.
+
+    Pure: no I/O, no tmux, no policy. A caller uses the count to apply its
+    own cap (``MAX_KEYS`` is documented here, enforced there) and to decide
+    what to say about submission -- zero newlines means nothing was
+    submitted, and a caller that reports otherwise is guessing.
+    """
+    segments = _NEWLINE.split(text)
+    return segments, len(segments) - 1
+
+
+def build_send_text_argvs(name: str, text: str) -> tuple[list[list[str]], int]:
+    """Build the ordered argvs that type *text* with newlines as Enter KEY EVENTS.
+
+    Returns ``(argvs, enter_count)``. Literal runs go through
+    ``build_send_text_argv``; each line ending becomes its own
+    ``build_send_key_argv(name, "Enter")``. Run them in order, on the same
+    target, without interleaving another send.
+
+    This exists because ``build_send_text_argv(name, "cmd\\n")`` delivers LF
+    (0x0A) inside the literal payload, and a raw-mode pane reads LF as
+    Ctrl+J and silently discards it -- see this module's docstring for the
+    full hazard and the crossterm citation. An Enter key event delivers CR
+    (0x0D), which is what pressing the key actually emits, and is strictly
+    more faithful for BOTH pane classes: a shell's line discipline converts
+    CR to LF on the way in anyway.
+
+    An empty segment contributes no argv -- a bare ``"\\n"`` is one Enter and
+    nothing else, and ``send-keys -l -- ""`` would be a pointless fork.
+
+    Pure argv construction: no I/O, so what reaches the pane is auditable at
+    a glance and testable without tmux. It appends nothing on its own: text
+    with no newline yields zero Enters and submits nothing. Whether a
+    trailing Enter *should* be added, and whether ``enter_count`` exceeds
+    ``MAX_KEYS``, are caller decisions this function deliberately does not
+    make.
+    """
+    segments, enters = split_on_newlines(text)
+    argvs: list[list[str]] = []
+    last = len(segments) - 1
+    for i, segment in enumerate(segments):
+        if segment:
+            argvs.append(build_send_text_argv(name, segment))
+        if i < last:
+            argvs.append(build_send_key_argv(name, "Enter"))
+    return argvs, enters
 
 
 def redact_preview(text: str, limit: int = PREVIEW_CHARS) -> str:
