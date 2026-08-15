@@ -21,11 +21,13 @@ from tmux_kit.keys import (
     ALLOWED_KEYS,
     build_send_key_argv,
     build_send_text_argv,
+    build_send_text_argvs,
     destructive_action_allowed,
     input_allowed_for_session,
     redact_preview,
     session_matches_allowlist,
     session_target,
+    split_on_newlines,
 )
 
 # ---------------------------------------------------------------------------
@@ -254,3 +256,102 @@ def test_input_allowed_for_session_still_authorizes_a_well_formed_policy():
         )
         is True
     )
+
+
+# ---------------------------------------------------------------------------
+# newline -> Enter KEY EVENT (the CR/LF hazard)
+#
+# `build_send_text_argv(name, "cmd\n")` puts LF (0x0A) inside the literal
+# payload. A shell pane submits on it; a RAW-MODE pane (any full-screen TUI
+# on crossterm/Ratatui) reads LF as Ctrl+J and silently discards it -- see
+# tmux_kit/keys.py's module docstring for the crossterm citation. Pressing
+# Enter delivers CR (0x0D). These tests pin the plural builder that closes
+# that gap, and pin that the singular builder's behavior did NOT change.
+# ---------------------------------------------------------------------------
+
+
+def test_split_on_newlines_counts_no_newline_as_zero():
+    segments, enters = split_on_newlines("echo hi")
+    assert segments == ["echo hi"]
+    assert enters == 0
+
+
+def test_split_on_newlines_treats_crlf_as_one_line_ending():
+    """A CRLF split into two Enters would submit an extra EMPTY line into
+    the target -- in a chat/REPL pane, an accidental empty turn."""
+    assert split_on_newlines("a\r\nb") == (["a", "b"], 1)
+    assert split_on_newlines("a\rb") == (["a", "b"], 1)
+    assert split_on_newlines("a\nb") == (["a", "b"], 1)
+
+
+def test_split_on_newlines_keeps_the_segment_count_invariant():
+    for text in ("", "a", "a\nb", "\n", "\n\n", "a\r\nb\nc\r"):
+        segments, enters = split_on_newlines(text)
+        assert len(segments) == enters + 1, text
+
+
+def test_build_send_text_argvs_without_a_newline_sends_no_enter():
+    """The plural builder appends nothing on its own. Whether a trailing
+    Enter *should* be added is caller policy, not a library default."""
+    argvs, enters = build_send_text_argvs("s1", "echo hi")
+    assert enters == 0
+    assert argvs == [["send-keys", "-l", "-t", "s1", "--", "echo hi"]]
+
+
+def test_build_send_text_argvs_turns_a_trailing_newline_into_a_key_event():
+    argvs, enters = build_send_text_argvs("s1", "echo hi\n")
+    assert enters == 1
+    assert argvs == [
+        ["send-keys", "-l", "-t", "s1", "--", "echo hi"],
+        ["send-keys", "-t", "s1", "Enter"],
+    ]
+
+
+def test_no_literal_payload_ever_carries_a_newline():
+    """The whole point: after this builder, no LF/CR byte is left inside a
+    `-l` payload where a raw-mode pane would swallow it."""
+    argvs, _ = build_send_text_argvs("s1", "a\nb\r\nc\rd\n")
+    literals = [argv[-1] for argv in argvs if argv[1] == "-l"]
+    assert literals, "expected at least one literal payload"
+    for payload in literals:
+        assert "\n" not in payload and "\r" not in payload, payload
+
+
+def test_build_send_text_argvs_interleaves_text_and_enters_in_order():
+    argvs, enters = build_send_text_argvs("s1", "one\ntwo\nthree")
+    assert enters == 2
+    assert argvs == [
+        ["send-keys", "-l", "-t", "s1", "--", "one"],
+        ["send-keys", "-t", "s1", "Enter"],
+        ["send-keys", "-l", "-t", "s1", "--", "two"],
+        ["send-keys", "-t", "s1", "Enter"],
+        ["send-keys", "-l", "-t", "s1", "--", "three"],
+    ]
+
+
+def test_a_bare_newline_is_one_enter_and_no_empty_literal_send():
+    """`send-keys -l -- ""` is a pointless fork; an empty segment
+    contributes no argv."""
+    argvs, enters = build_send_text_argvs("s1", "\n")
+    assert enters == 1
+    assert argvs == [["send-keys", "-t", "s1", "Enter"]]
+
+
+def test_build_send_text_argvs_keeps_the_option_terminator():
+    """The argument-injection guard survives the split: a segment starting
+    with `-` is still data, not a flag."""
+    argvs, _ = build_send_text_argvs("s1", "-rf --danger\nsecond")
+    assert argvs[0] == ["send-keys", "-l", "-t", "s1", "--", "-rf --danger"]
+
+
+def test_build_send_text_argv_singular_is_unchanged_by_this_addition():
+    """The literal builder still passes text through verbatim, newline and
+    all -- a caller that genuinely wants the LF byte keeps it."""
+    assert build_send_text_argv("s1", "cmd\n") == [
+        "send-keys",
+        "-l",
+        "-t",
+        "s1",
+        "--",
+        "cmd\n",
+    ]
