@@ -213,14 +213,96 @@ def session_matches_allowlist(name: str, patterns: list) -> bool:
     return False
 
 
+def build_exit_copy_mode_argv(name: str) -> list[str]:
+    """Build the argv to exit copy-mode on session *name*'s pane, if it's in one.
+
+    ``mouse on`` puts a pane into copy-mode silently on a mouse wheel-up, and
+    a pane in copy-mode routes ``send-keys -l`` / ``send-keys Enter`` through
+    the copy-mode key table instead of to the program running there --
+    typed text is silently swallowed and never delivered (measured on tmux
+    3.4 with a real config). ``send-keys -X -t <target> cancel`` looks like
+    the fix but is wrong: it exits 1 ("not in a mode") on a pane that is NOT
+    already in copy-mode -- the common case -- so it would raise on every
+    ordinary send. ``copy-mode -q`` is the safe alternative: exit 0 whether
+    or not the pane is in a mode (a no-op when it isn't), and it correctly
+    takes ``pane_in_mode`` from 1 to 0 when it is (both measured on tmux
+    3.4). Uses ``session_target(name)`` -- the same pane target
+    ``send-keys`` takes, not the ``=name`` exact-match form -- since
+    ``copy-mode`` takes a pane target too.
+
+    **As of 0.4.0, this is CHAINED automatically into every send** --
+    ``build_send_text_argv()`` and ``build_send_key_argv()`` each prepend
+    this exact argv, via a literal ``;`` argv element, ahead of their own
+    ``send-keys`` call. Callers no longer need to invoke this function
+    themselves before sending. 0.3.6 shipped this as a standalone builder
+    that callers had to remember to call first -- that was wrong: a
+    reminder that decays, and every new consumer could forget it. It was
+    also a real, measured bug: ``lifecycle.interrupt_session()`` (reached
+    via the shipped, MCP-exposed ``api.stop()`` that an AI agent calls to
+    interrupt a runaway process) never called it, and so silently failed
+    to deliver C-c whenever the target pane was in copy-mode (measured on
+    tmux 3.4: a `while true` loop kept running -- 5 lines to 9 lines over
+    4 seconds -- after ``stop()`` was called; the C-c was consumed by the
+    copy-mode key table instead of reaching the process).
+
+    This function remains public and independently useful -- e.g. a
+    caller that wants to force a pane out of copy-mode without also
+    sending input -- and the two send builders compose it (see their
+    docstrings) rather than duplicating this literal argv list.
+    """
+    return ["copy-mode", "-q", "-t", session_target(name)]
+
+
 def build_send_text_argv(name: str, text: str) -> list[str]:
     """Build the argv for literally typing *text* into session *name*.
 
+    Returns TWO tmux commands chained into ONE argv via a literal ``;``
+    element -- ``copy-mode -q -t <target> ; send-keys -l -t <target> --
+    <text>`` -- not the bare ``send-keys`` call alone. This is deliberate:
+    a pane left in copy-mode (entered SILENTLY by ``mouse on``'s wheel-up
+    binding, or by anything else that invokes ``copy-mode``) routes
+    ``send-keys -l`` through the copy-mode key table instead of to the
+    program running there -- the text is silently swallowed and never
+    delivered (measured on tmux 3.4 with a real config). The exit-copy-mode
+    step is folded into THIS builder -- via ``build_exit_copy_mode_argv()``
+    -- rather than left as a step every caller must remember to invoke
+    first (0.3.6 shipped it as a standalone builder for exactly that
+    caller-remembers-it shape, and it was wrong: see that function's
+    docstring). ``copy-mode -q`` (not ``send-keys -X cancel``, which exits
+    1 "not in a mode" on the common non-mode-pane case and would make
+    every ordinary send raise) is the safe primitive being chained here.
+
+    Chaining via a literal ``;`` argv element is the same mechanism
+    ``observe.capture_pane_window()`` already uses to run two tmux
+    commands in one subprocess invocation -- both commands execute in the
+    same tmux server command-loop tick, so this is atomic (no window for
+    a user to re-scroll between the exit and the send), not just
+    convenient. It does NOT reopen the literal-send security property:
+    ``;`` only acts as a tmux command separator when it is its OWN argv
+    element -- a ``;`` embedded inside *text* travels as ordinary data
+    within the single, ``--``-terminated ``send-keys`` argument and is
+    never parsed as a second command (verified against tmux 3.4 with
+    hostile text containing ``;``, ``$HOME``, and backticks/quotes --
+    every one of them reached the shell as literal characters, not as a
+    parsed command or expansion).
+
     ``-l`` = literal (no key-name lookup, no expansion); ``--`` = end of
     options (text starting with ``-`` stays data). The returned argv is for
-    ``create_subprocess_exec`` -- it must never be joined into a shell string.
+    ``create_subprocess_exec`` -- it must never be joined into a shell
+    string. When the pane is NOT in a mode -- the overwhelmingly common
+    case -- ``copy-mode -q`` is a clean no-op (exit 0, see
+    ``build_exit_copy_mode_argv()``), so the chain costs nothing there.
     """
-    return ["send-keys", "-l", "-t", session_target(name), "--", text]
+    return [
+        *build_exit_copy_mode_argv(name),
+        ";",
+        "send-keys",
+        "-l",
+        "-t",
+        session_target(name),
+        "--",
+        text,
+    ]
 
 
 def build_send_key_argv(name: str, key: str) -> list[str]:
@@ -228,10 +310,36 @@ def build_send_key_argv(name: str, key: str) -> list[str]:
 
     Caller must have validated *key* against ``ALLOWED_KEYS`` first; this
     function asserts that invariant rather than silently trusting it.
+
+    Like ``build_send_text_argv()``, this CHAINS
+    ``build_exit_copy_mode_argv(name)`` ahead of the ``send-keys`` call via
+    a literal ``;`` argv element, for the identical reason: a pane in
+    copy-mode swallows ``send-keys <key>`` into the copy-mode key table
+    instead of delivering it to the program running there. See
+    ``build_send_text_argv()``'s docstring for the full chaining/security
+    rationale (why ``;`` embedded in a later argv element can't be
+    mistaken for this separator, why this is atomic, why ``-q`` and not
+    ``send-keys -X cancel``) -- it applies identically here.
+
+    This is what makes ``lifecycle.interrupt_session()`` -- and therefore
+    the shipped, MCP-exposed ``api.stop()`` that an AI agent calls to
+    interrupt a runaway process -- reliable even when the target pane is
+    in copy-mode: ``interrupt_session()`` composes this builder and
+    inherits the fix for free, with no change of its own required. Before
+    0.4.0, ``api.stop()`` silently failed to deliver C-c whenever the pane
+    happened to be in copy-mode (measured on tmux 3.4: a `while true` loop
+    kept running after ``stop()`` was called).
     """
     if key not in ALLOWED_KEYS:
         raise ValueError(f"key {key!r} is not in the allowed key set")
-    return ["send-keys", "-t", session_target(name), key]
+    return [
+        *build_exit_copy_mode_argv(name),
+        ";",
+        "send-keys",
+        "-t",
+        session_target(name),
+        key,
+    ]
 
 
 def redact_preview(text: str, limit: int = PREVIEW_CHARS) -> str:

@@ -185,6 +185,7 @@
     }
   },
   "keys": {
+    "_note": "send_text/send_key 'expected' argv updated for v0.4.0 (see CHANGELOG.md and tmux_kit/keys.py's docstrings): build_send_text_argv()/build_send_key_argv() now chain a `copy-mode -q -t <target> ;` prefix ahead of `send-keys`, folding in the guarantee previously left to callers (0.3.6's standalone build_exit_copy_mode_argv()). These two arrays are NOT tmux-subprocess tapes -- `expected` is the pure builder function's own return value, captured directly from a call to the function with `name`/`text`/`key`, not from an intercepted real tmux invocation -- so updating them to the new, intentional argv shape requires no re-recording against real tmux, isolated or otherwise. Every other section in this fixture (capture/bell/presence/etc.) is unaffected and untouched.",
     "allowlist": [
       {
         "expected": false,
@@ -509,6 +510,7 @@
     "send_key": [
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -519,6 +521,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -529,6 +532,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -539,6 +543,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -549,6 +554,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -559,6 +565,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -569,6 +576,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -579,6 +587,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -589,6 +598,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -599,6 +609,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -609,6 +620,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-t",
           "alpha",
@@ -621,6 +633,7 @@
     "send_text": [
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-l",
           "-t",
@@ -633,6 +646,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-l",
           "-t",
@@ -645,6 +659,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "alpha", ";",
           "send-keys",
           "-l",
           "-t",
@@ -657,6 +672,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "beta", ";",
           "send-keys",
           "-l",
           "-t",
@@ -669,6 +685,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "beta", ";",
           "send-keys",
           "-l",
           "-t",
@@ -681,6 +698,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "beta", ";",
           "send-keys",
           "-l",
           "-t",
@@ -693,6 +711,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "gamma", ";",
           "send-keys",
           "-l",
           "-t",
@@ -705,6 +724,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "gamma", ";",
           "send-keys",
           "-l",
           "-t",
@@ -717,6 +737,7 @@
       },
       {
         "expected": [
+          "copy-mode", "-q", "-t", "gamma", ";",
           "send-keys",
           "-l",
           "-t",

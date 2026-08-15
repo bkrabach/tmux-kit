@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 from tmux_kit.keys import (
     ALLOWED_KEYS,
+    build_exit_copy_mode_argv,
     build_send_key_argv,
     build_send_text_argv,
     destructive_action_allowed,
@@ -38,13 +39,105 @@ def test_session_target_is_plain_name():
 
 
 def test_build_send_text_argv_shape():
+    """0.4.0: the argv is now TWO tmux commands chained via a literal ``;``
+    -- ``copy-mode -q -t <target>`` ahead of the ``send-keys`` call -- not
+    the bare ``send-keys`` call alone. See keys.py's docstring and
+    CHANGELOG's 0.4.0 entry: this used to be a separate builder
+    (``build_exit_copy_mode_argv``) callers had to remember to invoke
+    first, which is exactly the shape that let
+    ``lifecycle.interrupt_session()`` (and therefore ``api.stop()``)
+    silently fail to interrupt a pane stuck in copy-mode.
+    """
     argv = build_send_text_argv("s1", "-rf --danger")
-    assert argv == ["send-keys", "-l", "-t", "s1", "--", "-rf --danger"]
+    assert argv == [
+        "copy-mode",
+        "-q",
+        "-t",
+        "s1",
+        ";",
+        "send-keys",
+        "-l",
+        "-t",
+        "s1",
+        "--",
+        "-rf --danger",
+    ]
+
+
+def test_build_send_text_argv_composes_build_exit_copy_mode_argv():
+    """The chained prefix must be EXACTLY ``build_exit_copy_mode_argv()``'s
+    own return value -- one literal source, not a hand-duplicated copy
+    that could silently drift from it.
+    """
+    name = "s1"
+    prefix = build_exit_copy_mode_argv(name)
+    argv = build_send_text_argv(name, "hello")
+    assert argv[: len(prefix)] == prefix
+    assert argv[len(prefix)] == ";"
+
+
+def test_build_send_text_argv_keeps_literal_semicolon_as_one_argv_element():
+    """A literal ``;`` INSIDE the text must stay inside the single,
+    ``--``-terminated ``send-keys`` argument -- never split out into a
+    second tmux command. This is the property that makes chaining safe:
+    ``;`` is only a tmux command separator when it is its OWN argv
+    element, never as a substring of a later element. Verified against
+    real tmux 3.4 with this exact hostile shape (see CHANGELOG 0.4.0).
+    """
+    hostile = "; rm -rf / && $(reboot) `id` | tee /etc/passwd"
+    argv = build_send_text_argv("s1", hostile)
+    # Exactly one command separator: the one WE inserted between
+    # copy-mode and send-keys. The hostile text does NOT contribute a
+    # second one, because it travels as a single argv element.
+    assert argv.count(";") == 1
+    assert argv[-1] == hostile
+
+
+def test_build_send_key_argv_shape():
+    """0.4.0: same chaining as build_send_text_argv() -- see that test's
+    docstring.
+    """
+    argv = build_send_key_argv("s1", "C-c")
+    assert argv == [
+        "copy-mode",
+        "-q",
+        "-t",
+        "s1",
+        ";",
+        "send-keys",
+        "-t",
+        "s1",
+        "C-c",
+    ]
+
+
+def test_build_send_key_argv_composes_build_exit_copy_mode_argv():
+    name = "s1"
+    prefix = build_exit_copy_mode_argv(name)
+    argv = build_send_key_argv(name, "C-c")
+    assert argv[: len(prefix)] == prefix
+    assert argv[len(prefix)] == ";"
 
 
 def test_build_send_key_argv_rejects_non_allowlisted():
     with pytest.raises(ValueError):
         build_send_key_argv("s1", "C-b")
+
+
+def test_build_exit_copy_mode_argv_shape():
+    argv = build_exit_copy_mode_argv("s1")
+    assert argv == ["copy-mode", "-q", "-t", "s1"]
+
+
+def test_build_exit_copy_mode_argv_does_not_use_the_equals_name_form():
+    """``copy-mode`` takes a pane target, same as ``send-keys`` -- the
+    ``=name`` exact-match prefix is not valid here either (see
+    ``session_target()``'s docstring), so the target must be the plain
+    name, never ``=s1``.
+    """
+    argv = build_exit_copy_mode_argv("s1")
+    assert "=s1" not in argv
+    assert argv[argv.index("-t") + 1] == "s1"
 
 
 def test_allowed_keys_is_the_documented_closed_set():

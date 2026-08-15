@@ -3,6 +3,86 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.4.0
+
+### Changed (BEHAVIORAL, not additive -- reads both existing public builders' output)
+
+- **`tmux_kit.keys.build_send_text_argv()` and `build_send_key_argv()` now
+  CHAIN `build_exit_copy_mode_argv()` ahead of their `send-keys` call,
+  instead of leaving it to the caller to invoke first.** 0.3.6 added
+  `build_exit_copy_mode_argv()` as a standalone builder that callers had
+  to remember to call before every send -- that was the wrong fix: a
+  reminder that decays, and every new consumer could forget it. It
+  already had: `lifecycle.interrupt_session()` -- reached via the
+  shipped, MCP-exposed `api.stop()` that an AI agent calls to interrupt a
+  runaway process -- never called it. As a direct result, **`api.stop()`
+  silently failed to deliver Ctrl-C whenever the target pane was in
+  copy-mode**, with no error of any kind. Measured on real tmux 3.4: a
+  `while true` loop kept running (5 lines -> 9 lines of output over 4
+  seconds) after `stop()` was called -- the C-c was consumed by the
+  copy-mode key table instead of reaching the process.
+
+  The fix moves the guarantee INTO the two send builders, so no consumer
+  -- present or future -- can bypass it. Both builders now return TWO
+  tmux commands chained into one argv via a literal `;` element:
+  `copy-mode -q -t <target> ; send-keys ...`. This is the same
+  chaining-via-literal-`;` mechanism already used by
+  `observe.capture_pane_window()`; both commands execute in one tmux
+  server command-loop tick, so the exit-and-send is atomic (no window
+  for a user to re-scroll in between), and `lifecycle.interrupt_session()`
+  inherits the fix for free with no code change of its own.
+
+  `build_exit_copy_mode_argv()` itself is UNCHANGED and remains public --
+  the two send builders compose it rather than duplicating its literal
+  argv list.
+
+  **Verified the chain does not reopen the literal-send security
+  property:** tested against real tmux 3.4 with hostile text containing
+  a literal `;`, `$HOME`, and backticks/quotes -- the `;` inside the text
+  stayed inside the single, `--`-terminated `send-keys` argument and was
+  never parsed as a second tmux command, because `;` only acts as a tmux
+  command separator when it is its OWN argv element, never as a substring
+  of another element.
+
+  **Callers affected:** any code building on `tmux_kit.keys.build_send_text_argv()`
+  / `build_send_key_argv()` (directly, or transitively via
+  `lifecycle.interrupt_session()`) will now see the `copy-mode -q -t
+  <target> ;` prefix in the argv it passes to `run_tmux()` /
+  `create_subprocess_exec`. A test asserting the old, bare `["send-keys",
+  ...]` shape must be updated to the new chained shape (see
+  `tests/test_keys.py`, `tests/test_lifecycle.py`, and
+  `tests/fixtures/differential/recorded.json`, all updated in this
+  release).
+
+## 0.3.6
+
+### Added
+
+- **`tmux_kit.keys.build_exit_copy_mode_argv(name)`** -- argv for
+  `copy-mode -q -t <target>`, a pure builder alongside the existing
+  `build_send_text_argv()` / `build_send_key_argv()`. Motivated by a real,
+  measured hazard: `mouse on` puts a pane into copy-mode silently on a
+  mouse wheel-up, and a pane in copy-mode routes `send-keys -l` /
+  `send-keys Enter` through the copy-mode key table instead of to the
+  program running there -- typed text is silently swallowed and never
+  delivered (measured on tmux 3.4 with a real config). `send-keys -X -t
+  <target> cancel` looks like the fix but is wrong: it exits 1 ("not in a
+  mode") on a pane that is NOT already in copy-mode -- the common case --
+  so it would raise on every ordinary send. `copy-mode -q` is the safe
+  alternative: exit 0 whether or not the pane is in a mode (a no-op when
+  it isn't), and it correctly takes `pane_in_mode` from 1 to 0 when it is
+  (both measured on tmux 3.4). Uses `session_target()`, the same pane
+  target `send-keys` takes, not the `=name` exact-match form.
+
+  Purely additive: a new function alongside the existing argv builders,
+  nothing else in `tmux_kit.keys` changed shape. Not exported from
+  `tmux_kit/__init__.py` -- consistent with `build_send_text_argv()` /
+  `build_send_key_argv()`, neither of which is re-exported at the top
+  level either; the facade (`tmux_kit.api`) deliberately does not expose a
+  general send API (see CONSUMERS.md's "NOT in the library yet", the
+  deferred `Sender`/`SendPolicy` object). Reach it via `from tmux_kit.keys
+  import build_exit_copy_mode_argv`, same as its neighbours.
+
 ## 0.3.5
 
 ### Fixed

@@ -33,10 +33,19 @@ async def test_kill_session_propagates_tmux_refusal(monkeypatch):
 
 
 async def test_interrupt_session_sends_ctrl_c_via_the_shared_keys_builder(monkeypatch):
+    """0.4.0: `build_send_key_argv()` (which `interrupt_session()` composes)
+    now CHAINS `copy-mode -q -t <target>` ahead of `send-keys` via a
+    literal `;` argv element, so a pane stuck in copy-mode no longer
+    swallows the C-c -- see keys.py's docstring and CHANGELOG's 0.4.0
+    entry. `interrupt_session()` needed no code change of its own to pick
+    this up; it inherits the fix purely by composing `build_send_key_argv`.
+    """
     mock = AsyncMock(return_value="")
     monkeypatch.setattr(lifecycle_mod, "run_tmux", mock)
     await lifecycle_mod.interrupt_session("alpha")
-    mock.assert_awaited_once_with("send-keys", "-t", "alpha", "C-c")
+    mock.assert_awaited_once_with(
+        "copy-mode", "-q", "-t", "alpha", ";", "send-keys", "-t", "alpha", "C-c"
+    )
 
 
 async def test_interrupt_session_propagates_tmux_refusal(monkeypatch):
