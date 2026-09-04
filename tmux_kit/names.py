@@ -40,18 +40,72 @@ from tmux_kit.proc import run_tmux
 # traversal) closes that class. ``\A...\Z`` (not ``^...$``) is required because
 # ``$`` also matches just before a trailing newline, so ``"name\n"`` would slip
 # through ``^...$``. All 68 live session names pass this pattern.
-SESSION_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\Z")
+# The maximum session-name LENGTH, in characters. Raised from 64 to 255 in
+# 0.5.0; the 64 was arbitrary and rejected names that both tmux and the
+# filesystem would have accepted without complaint.
+#
+# 255 is NOT a tmux limit -- tmux has none. Measured against a real tmux 3.4
+# on an isolated (``-L``) server: names of 64, 65, 100, 128, 200, 254, 255,
+# 256, 300, 512, 1024 and 4096 characters ALL created with rc=0 and
+# round-tripped at full length through ``list-sessions``. No length was found
+# at which tmux refuses or truncates.
+#
+# 255 is the FILESYSTEM's limit -- POSIX ``NAME_MAX``, and the value on ext4,
+# xfs, btrfs, APFS and every mainstream Linux/macOS filesystem: a single path
+# COMPONENT may be at most 255 BYTES. It binds here because consumers name a
+# DIRECTORY after the session (muxplex's configured ``new_session_template``
+# is ``amplifier-workspace ~/dev/{name}``, making the session name a
+# directory basename verbatim). Measured on ext4: ``mkdir`` of a
+# 255-character name succeeds; 256 fails ENAMETOOLONG ("File name too long").
+# ``getconf NAME_MAX`` reports 255.
+#
+# CHARACTERS vs BYTES -- load-bearing, do not skip. ``NAME_MAX`` is a BYTE
+# budget, but this regex's charset is ASCII-only (``[A-Za-z0-9_.-]``), so
+# every accepted character is exactly ONE UTF-8 byte and a 255-CHARACTER cap
+# IS a 255-byte cap. That equivalence is the only reason this constant can be
+# a character count at all. If the charset is ever widened to non-ASCII, this
+# must become an encoded-byte-length check, NOT a ``len()`` check -- otherwise
+# a 255-character name of multi-byte characters passes validation here and
+# then fails at ``mkdir`` in the consumer.
+#
+# A consumer that embeds the name in a LONGER basename (a ``<name>.sock``
+# sibling, a ``<prefix>-<name>`` directory) has less than 255 bytes of room
+# and MUST enforce its own, stricter cap -- this library cannot know that
+# consumer's prefix, and guessing one here would be policy, not mechanism
+# (AGENTS.md's scope litmus test). tmux-kit itself never derives a filename
+# from a session name (its socket dir is fixed and name-independent), so 255
+# is the right bound HERE: the largest value that is wrong for no consumer,
+# rather than a smaller guess that is wrong for all of them.
+SESSION_NAME_MAX_LEN: int = 255
+
+# Built FROM the constant so the two can never drift. The quantifier is
+# ``SESSION_NAME_MAX_LEN - 1`` because the leading-character class already
+# consumes one character -- an off-by-one here would silently ship a 254- or
+# 256-char cap that disagrees with the constant every error message quotes
+# (pinned by ``tests/test_names.py``'s constant/regex agreement test).
+SESSION_NAME_RE = re.compile(
+    r"\A[A-Za-z0-9_][A-Za-z0-9_.-]{0," + str(SESSION_NAME_MAX_LEN - 1) + r"}\Z"
+)
 
 
 def is_valid_session_name(name: str) -> bool:
     """Return True if *name* is a safe session name per ``SESSION_NAME_RE``.
 
-    Safe means: 1-64 chars drawn only from ASCII letters, digits, and the
-    ``_ . -`` set, with an alphanumeric-or-underscore FIRST character -- no
-    whitespace (including a trailing newline), no shell metacharacters, no
-    ``:``, and no leading ``-`` (argument injection) or leading ``.``/``..``
-    (path traversal). Callers at the API boundary reject names that fail this
-    check with HTTP 400 before the name reaches any subprocess.
+    Safe means: 1 to ``SESSION_NAME_MAX_LEN`` (255) chars drawn only from
+    ASCII letters, digits, and the ``_ . -`` set, with an
+    alphanumeric-or-underscore FIRST character -- no whitespace (including a
+    trailing newline), no shell metacharacters, no ``:``, and no leading
+    ``-`` (argument injection) or leading ``.``/``..`` (path traversal).
+    Callers at the API boundary reject names that fail this check with HTTP
+    400 before the name reaches any subprocess.
+
+    The length bound is the FILESYSTEM's (``NAME_MAX``, 255 bytes), not
+    tmux's -- tmux has no session-name length limit at all. A caller
+    rendering a rejection message should quote ``SESSION_NAME_MAX_LEN``
+    rather than hardcoding a number: this cap was 64 before 0.5.0, and a
+    hardcoded message is exactly what went stale when it moved. A consumer
+    that needs a STRICTER cap (because it embeds the name in a longer
+    basename) enforces that itself -- see ``SESSION_NAME_MAX_LEN``'s comment.
     """
     return bool(SESSION_NAME_RE.match(name))
 
