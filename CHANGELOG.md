@@ -3,6 +3,68 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.5.0
+
+### Changed (BEHAVIORAL, widening only -- nothing previously accepted is now rejected)
+
+- **`SESSION_NAME_RE`'s length cap raised from 64 to 255 characters.** The
+  charset and the leading-character rule are UNCHANGED: only the length
+  quantifier moved (`{0,63}` -> `{0,254}`). A leading `-` (argument
+  injection -- `shlex.quote` does not neutralize a flag) and a leading
+  `.`/`..` (path traversal) are still rejected, at every length; so are
+  `:`, whitespace, shell metacharacters, and a trailing newline.
+
+  **The 64 was arbitrary, and this is measured, not asserted.** Against a
+  real tmux 3.4 on an isolated (`-L`) server, session names of 64, 65, 100,
+  128, 200, 254, 255, 256, 300, 512, 1024 and 4096 characters ALL created
+  with rc=0 and round-tripped at full length through `list-sessions` --
+  tmux has no session-name length limit at all. A user was being refused at
+  65 characters for a name tmux would have accepted without complaint.
+  `tests/test_integration.py` now re-proves this every CI run against real
+  tmux, at the full cap and at the old-cap-plus-one.
+
+  **255 is the FILESYSTEM's limit, not tmux's** -- POSIX `NAME_MAX`, and
+  the value on ext4, xfs, btrfs and APFS: one path COMPONENT may be at most
+  255 BYTES. It binds because consumers name a DIRECTORY after the session
+  (muxplex's configured `new_session_template` is
+  `amplifier-workspace ~/dev/{name}`, making the session name a directory
+  basename verbatim). Measured on ext4: `mkdir` of a 255-character name
+  succeeds, 256 fails ENAMETOOLONG.
+
+  **Callers affected:** none adversely -- this only widens what is accepted.
+  A consumer that embeds the name in a LONGER basename (a `<name>.sock`
+  sibling, a `<prefix>-<name>` directory) has less than 255 bytes of room
+  and must enforce its own, stricter cap; the library cannot know that
+  consumer's prefix, and guessing one here would be policy, not mechanism
+  (AGENTS.md's scope litmus test). tmux-kit itself never derives a filename
+  from a session name -- its socket dir is fixed and name-independent.
+
+### Added
+
+- **`tmux_kit.names.SESSION_NAME_MAX_LEN`** (255) -- the cap as an exported
+  constant, with `SESSION_NAME_RE` now BUILT from it so the two cannot
+  drift (pinned by a test; the quantifier is `MAX_LEN - 1` because the
+  leading-character class already consumes one character). Exported
+  specifically so a consumer's rejection message can quote the real,
+  current number instead of hardcoding one: muxplex's own 400 detail
+  currently reads *"(1-64 characters)"*, which is exactly the kind of
+  hardcoded message that goes stale the moment a cap moves.
+
+  CHARACTERS vs BYTES is load-bearing here: `NAME_MAX` is a BYTE budget,
+  but the regex's charset is ASCII-only, so every accepted character is
+  exactly one UTF-8 byte and a 255-CHARACTER cap IS a 255-byte cap. If the
+  charset is ever widened to non-ASCII, this must become an
+  encoded-byte-length check, not a `len()` check -- a test asserts the
+  ASCII-only property so that change cannot land silently.
+
+- **`api.start()` / `api.rename()` now say WHY a name was rejected when the
+  reason is length** -- naming `SESSION_NAME_MAX_LEN` and the offending
+  length, instead of a bare `"is not a valid session name"`. A caller told
+  only "invalid" cannot distinguish a 300-character name from one
+  containing a `:`, and those have opposite fixes. The over-long name is
+  summarized, not echoed whole, so a 4096-character name does not land in a
+  traceback. The charset message is unchanged.
+
 ## 0.4.0
 
 ### Changed (BEHAVIORAL, not additive -- reads both existing public builders' output)

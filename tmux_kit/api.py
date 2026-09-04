@@ -195,6 +195,39 @@ _START_READY_POLL_BUDGET = 0.5
 _START_READY_POLL_INTERVAL = 0.05
 
 
+def _session_name_rejection(name: str) -> str | None:
+    """Return why *name* fails ``names.is_valid_session_name()``, or None.
+
+    Exists so a LENGTH failure names the real, current limit
+    (``names.SESSION_NAME_MAX_LEN``) and the offending length, instead of a
+    bare "is not a valid session name". A caller told only "invalid" cannot
+    tell a 300-character name from one containing a ``:`` -- and those two
+    have opposite fixes (shorten it vs. change a character). The number is
+    read from the constant, never hardcoded: this cap was 64 before 0.5.0,
+    and a hardcoded 64 in a message is exactly what went stale when it moved.
+
+    An over-long name is summarized rather than echoed whole -- a 4096-char
+    name in a traceback is noise, and the length is the actionable fact.
+
+    Deliberately module-PRIVATE. How to WORD a rejection is the consuming
+    application's call (AGENTS.md's "could two reasonable teams want
+    different behavior here?" -- for an error string, obviously yes). What
+    the library owes a consumer is the NUMBER, exported as
+    ``names.SESSION_NAME_MAX_LEN``; this is only api.py's own wording for
+    api.py's own ``ValueError``s.
+    """
+    if names.is_valid_session_name(name):
+        return None
+    if len(name) > names.SESSION_NAME_MAX_LEN:
+        return (
+            f"session name is {len(name)} characters; the maximum is "
+            f"{names.SESSION_NAME_MAX_LEN} (the filesystem's NAME_MAX -- a "
+            f"consumer names a directory after the session). Starts with "
+            f"{name[:32]!r}"
+        )
+    return f"{name!r} is not a valid session name"
+
+
 async def _wait_for_pane_ready(
     name: str,
     *,
@@ -286,8 +319,9 @@ async def start(
     # state (a real bug found writing this fix's own tests: a caller that
     # only ever sees the ValueError path still triggered _ensure_wired()'s
     # first-installed-factory side effect under the old ordering).
-    if not names.is_valid_session_name(name):
-        raise ValueError(f"{name!r} is not a valid session name")
+    rejection = _session_name_rejection(name)
+    if rejection is not None:
+        raise ValueError(rejection)
     if not names.is_tmux_stable_name(name):
         raise ValueError(
             f"{name!r} contains '.', which tmux silently mangles to '_' "
@@ -346,8 +380,9 @@ async def rename(old_name: str, new_name: str) -> str:
             observed as live afterward.
     """
     _ensure_wired()
-    if not names.is_valid_session_name(new_name):
-        raise ValueError(f"{new_name!r} is not a valid session name")
+    rejection = _session_name_rejection(new_name)
+    if rejection is not None:
+        raise ValueError(rejection)
     if not names.is_tmux_stable_name(new_name):
         raise ValueError(
             f"{new_name!r} contains '.', which tmux silently mangles to '_' "

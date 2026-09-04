@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from tmux_kit import api, proc
+from tmux_kit import api, names, proc
 
 
 @pytest.fixture(autouse=True)
@@ -171,6 +171,68 @@ async def test_start_rejects_dot_mangled_name_without_calling_spawn(monkeypatch)
     with pytest.raises(ValueError, match="mangles"):
         await api.start("build.js")
     mock.assert_not_awaited()
+
+
+async def test_start_rejection_message_names_the_real_length_limit(monkeypatch):
+    """A caller told only "is not a valid session name" cannot tell an
+    over-long name from one containing a ':' -- and those have opposite
+    fixes. The length failure must name the actual cap and the actual
+    length, and must read the cap from the constant so it cannot go stale
+    the way a hardcoded "1-64 characters" did.
+    """
+    mock = AsyncMock()
+    monkeypatch.setattr(api.spawn, "spawn_session", mock)
+    over = "a" * (names.SESSION_NAME_MAX_LEN + 1)
+
+    with pytest.raises(ValueError) as excinfo:
+        await api.start(over)
+    message = str(excinfo.value)
+
+    assert str(names.SESSION_NAME_MAX_LEN) in message, (
+        f"rejection message does not name the real limit: {message!r}"
+    )
+    assert str(len(over)) in message, (
+        f"rejection message does not name the offending length: {message!r}"
+    )
+    # The whole 256-char name is summarized, not echoed into a traceback.
+    assert over not in message
+    mock.assert_not_awaited()
+
+
+async def test_rename_rejection_message_names_the_real_length_limit(monkeypatch):
+    """rename() mirrors start()'s guard -- both entry points that accept a
+    caller-chosen name must fail the same, informative way.
+    """
+    mock = AsyncMock()
+    monkeypatch.setattr(api.names, "rename_tmux_session", mock)
+    over = "a" * (names.SESSION_NAME_MAX_LEN + 1)
+
+    with pytest.raises(ValueError) as excinfo:
+        await api.rename("old", over)
+
+    assert str(names.SESSION_NAME_MAX_LEN) in str(excinfo.value)
+    mock.assert_not_awaited()
+
+
+async def test_charset_rejection_message_is_unchanged_by_the_length_branch(
+    monkeypatch,
+):
+    """The length branch must not swallow the charset case -- a ':' name is
+    still reported as an invalid name, not as a length problem.
+    """
+    monkeypatch.setattr(api.spawn, "spawn_session", AsyncMock())
+    with pytest.raises(ValueError, match="is not a valid session name"):
+        await api.start("has:colon")
+
+
+async def test_start_accepts_a_name_at_the_length_cap(monkeypatch):
+    """The widened cap is real at the facade, not only in the regex."""
+    monkeypatch.setattr(
+        api.spawn, "spawn_session", AsyncMock(return_value=(True, None))
+    )
+    monkeypatch.setattr(api, "_wait_for_pane_ready", AsyncMock())
+    ok, err = await api.start("a" * names.SESSION_NAME_MAX_LEN)
+    assert (ok, err) == (True, None)
 
 
 async def test_start_accepts_a_name_without_dots(monkeypatch):
