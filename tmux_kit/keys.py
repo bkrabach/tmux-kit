@@ -199,10 +199,12 @@ def session_matches_allowlist(name: str, patterns: list) -> bool:
     ``settings.LOCAL_ONLY_KEYS`` -- never PATCHable, never federation-synced),
     not untrusted network input, so fnmatch's glob-to-regex translation is
     not a ReDoS surface here. *name* has already passed
-    ``is_valid_session_name`` (charset restricted to
-    ``[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}``) before this function ever runs, so
-    there are no path-separator or traversal edge cases for the glob to
-    interact with.
+    ``is_valid_session_name`` (charset restricted to ASCII
+    ``[A-Za-z0-9_][A-Za-z0-9_.-]*``, length bounded by
+    ``names.SESSION_NAME_MAX_LEN``) before this function ever runs, so there
+    are no path-separator or traversal edge cases for the glob to interact
+    with. The length bound moved from 64 to 255 in 0.5.0; the CHARSET -- the
+    part this fence actually depends on -- is unchanged.
     """
     folded_name = name.casefold()
     for pattern in patterns:

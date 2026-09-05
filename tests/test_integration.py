@@ -24,7 +24,11 @@ import uuid
 
 import pytest
 from tmux_kit.bell import poll_bell_flag
-from tmux_kit.names import rename_tmux_session
+from tmux_kit.names import (
+    SESSION_NAME_MAX_LEN,
+    is_valid_session_name,
+    rename_tmux_session,
+)
 from tmux_kit.observe import capture_pane, enumerate_sessions
 from tmux_kit.spawn import spawn_session
 
@@ -80,6 +84,74 @@ async def test_spawn_enumerate_capture_round_trip(tmux_socket, monkeypatch):
 
     snapshot = await capture_pane(name)
     assert isinstance(snapshot, str)
+
+
+async def test_real_tmux_accepts_a_name_at_the_full_length_cap(
+    tmux_socket, monkeypatch
+):
+    """The empirical basis for SESSION_NAME_MAX_LEN, re-proved every CI run.
+
+    The cap was 64 until 0.5.0 -- a number tmux never asked for. This drives
+    a real tmux server and asserts a name at the FULL cap creates and
+    round-trips at full length through enumeration, so the claim "the 64 was
+    arbitrary" is a live proof rather than a comment someone once wrote.
+
+    Deliberately asserts the ROUND-TRIPPED LENGTH, not just membership: tmux
+    reports rc=0 even when it silently mangles a name (the whole reason
+    ``is_tmux_stable_name`` exists), so "the call succeeded" would not have
+    caught a silent truncation -- which is precisely the failure mode this
+    library's consumers were already suffering elsewhere.
+    """
+    import tmux_kit.observe as observe_mod
+    import tmux_kit.spawn as spawn_mod
+
+    async def run_tmux_isolated(*args: str) -> str:
+        return await _run(tmux_socket, *args)
+
+    monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
+    monkeypatch.setattr(spawn_mod, "enumerate_sessions", observe_mod.enumerate_sessions)
+
+    name = "k" * SESSION_NAME_MAX_LEN
+    assert is_valid_session_name(name), "the cap's own regex must accept this"
+
+    ok, err = await spawn_session(
+        name, f"tmux -L {tmux_socket} new-session -d -s {{name}}"
+    )
+    assert ok, err
+
+    observed = await enumerate_sessions()
+    assert name in observed, "tmux did not create the full-length name verbatim"
+    match = next(n for n in observed if n == name)
+    assert len(match) == SESSION_NAME_MAX_LEN, (
+        f"tmux silently changed the name's length: asked for "
+        f"{SESSION_NAME_MAX_LEN}, observed {len(match)}"
+    )
+
+
+async def test_real_tmux_would_have_accepted_the_old_cap_plus_one(
+    tmux_socket, monkeypatch
+):
+    """The 64 was arbitrary -- this is the direct evidence.
+
+    A 65-character name (rejected outright before 0.5.0) is created by real
+    tmux with rc=0 and round-trips whole. The old cap was refusing names the
+    underlying tool had no objection to.
+    """
+    import tmux_kit.observe as observe_mod
+    import tmux_kit.spawn as spawn_mod
+
+    async def run_tmux_isolated(*args: str) -> str:
+        return await _run(tmux_socket, *args)
+
+    monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
+    monkeypatch.setattr(spawn_mod, "enumerate_sessions", observe_mod.enumerate_sessions)
+
+    name = "k" * 65  # one past the pre-0.5.0 cap
+    ok, err = await spawn_session(
+        name, f"tmux -L {tmux_socket} new-session -d -s {{name}}"
+    )
+    assert ok, err
+    assert name in await enumerate_sessions()
 
 
 async def test_rename_tmux_session_round_trip(tmux_socket, monkeypatch):

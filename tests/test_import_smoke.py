@@ -56,6 +56,7 @@ from tmux_kit.proc import (
 from tmux_kit.spawn import spawn_session
 from tmux_kit.lifecycle import interrupt_session, kill_session
 from tmux_kit.names import (
+    SESSION_NAME_MAX_LEN,
     SESSION_NAME_RE,
     is_tmux_stable_name,
     is_valid_session_name,
