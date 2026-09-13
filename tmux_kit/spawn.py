@@ -42,6 +42,19 @@ SPAWN_TIMEOUT_SECONDS = 30
 SPAWN_CLEANUP_TIMEOUT_SECONDS = 1
 
 
+def _close_launcher_transport(proc: asyncio.subprocess.Process) -> None:
+    """Close this process's pipe ends after a timed-out launcher is killed.
+
+    A descendant can retain stdout/stderr after the launcher has exited. The
+    subprocess transport owns our corresponding pipe ends; closing those ends
+    releases the event-loop resources without signalling the descendant's
+    process group (and therefore without touching a created tmux server).
+    """
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
+
+
 async def spawn_session(
     name: str, template: str, *, env: dict[str, str] | None | object = UNSET
 ) -> tuple[bool, str | None]:
@@ -199,6 +212,11 @@ async def spawn_session(
                     SPAWN_CLEANUP_TIMEOUT_SECONDS,
                     command,
                 )
+            finally:
+                # communicate() was cancelled by the spawn timeout. Close our
+                # pipe transports even if a descendant keeps its inherited
+                # descriptor open; only the launcher itself was killed above.
+                _close_launcher_transport(proc)
         # A timeout is not success by itself.  Preserve the established
         # long-lived-template success only when the requested session was
         # positively observed after cleanup.

@@ -70,6 +70,7 @@ async def test_timeout_cleanup_wait_is_bounded_before_session_verification(monke
     process.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
     process.wait = AsyncMock(side_effect=asyncio.TimeoutError)
     process.kill = MagicMock()
+    process._transport = MagicMock()
 
     async def fake_shell(_command, **_kwargs):
         return process
@@ -90,6 +91,7 @@ async def test_timeout_cleanup_wait_is_bounded_before_session_verification(monke
     assert "without creating session" in (error or "")
     assert elapsed < 0.2
     process.kill.assert_called_once_with()
+    process._transport.close.assert_called_once_with()
 
 async def test_cgroup_escape_spawn_has_the_same_terminal_safety(monkeypatch):
     captured = {}
