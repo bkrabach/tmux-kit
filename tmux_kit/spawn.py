@@ -29,7 +29,7 @@ import shlex
 import shutil
 
 from tmux_kit.cgroup import should_escape, wrap_shell_argv
-from tmux_kit.observe import enumerate_sessions_strict
+from tmux_kit.observe import session_exists_strict
 from tmux_kit.proc import UNSET, default_env
 
 _log = logging.getLogger(__name__)
@@ -159,13 +159,13 @@ async def spawn_session(
             # try to attach (which fails without a TTY). If the session
             # exists despite the non-zero exit, treat it as success.
             try:
-                sessions = await enumerate_sessions_strict(env=env)
+                session_exists = await session_exists_strict(name, env=env)
             except (RuntimeError, FileNotFoundError) as exc:
                 return False, (
                     f"Session command exited {proc.returncode} but could not "
                     f"verify session {name!r}: {exc}"
                 )
-            if name in sessions:
+            if session_exists:
                 _log.info(
                     "Session command exited %d but session '%s' exists -- "
                     "treating as success (likely a TTY-attach failure)",
@@ -201,6 +201,12 @@ async def spawn_session(
                 proc.kill()
             except ProcessLookupError:
                 pass
+            # communicate() was cancelled by the spawn timeout. Closing the
+            # local pipe transports first lets proc.wait() complete without
+            # waiting for a descendant that inherited stdout/stderr. close()
+            # may repeat an already-requested launcher kill during a race; it
+            # never kills a process group or an intentionally-created server.
+            _close_launcher_transport(proc)
             try:
                 await asyncio.wait_for(
                     proc.wait(), timeout=SPAWN_CLEANUP_TIMEOUT_SECONDS
@@ -212,22 +218,17 @@ async def spawn_session(
                     SPAWN_CLEANUP_TIMEOUT_SECONDS,
                     command,
                 )
-            finally:
-                # communicate() was cancelled by the spawn timeout. Close our
-                # pipe transports even if a descendant keeps its inherited
-                # descriptor open; only the launcher itself was killed above.
-                _close_launcher_transport(proc)
         # A timeout is not success by itself.  Preserve the established
         # long-lived-template success only when the requested session was
         # positively observed after cleanup.
         try:
-            sessions = await enumerate_sessions_strict(env=env)
+            session_exists = await session_exists_strict(name, env=env)
         except (RuntimeError, FileNotFoundError) as exc:
             return False, (
                 f"Session command timed out after {SPAWN_TIMEOUT_SECONDS}s; "
                 f"could not verify session {name!r}: {exc}"
             )
-        if name not in sessions:
+        if not session_exists:
             return False, (
                 f"Session command timed out after {SPAWN_TIMEOUT_SECONDS}s "
                 f"without creating session {name!r}"

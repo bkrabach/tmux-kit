@@ -257,11 +257,11 @@ consumer.
 changed. Pin exactly:
 
 ```toml
-dependencies = ["tmux-kit==0.3.2"]
+dependencies = ["tmux-kit==0.6.0"]
 
 # Pinned git install, for a managed environment that cannot reach public
 # PyPI (see CONSUMERS.md):
-#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.3.2
+#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit.git@v0.6.0
 ```
 
 ## Tests

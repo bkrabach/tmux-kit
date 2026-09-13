@@ -41,50 +41,56 @@ async def test_normal_spawn_detaches_child_and_disconnects_stdin(monkeypatch):
 async def test_nonzero_created_session_is_verified_in_its_explicit_environment(
     monkeypatch,
 ):
-    """A success decision must not observe a different tmux socket."""
+    """A success decision must query only the exact named session and socket."""
     explicit_env = {"TMUX_TMPDIR": "/explicit-socket"}
-    observed_envs = []
+    checks = []
 
     async def fake_shell(_command, **_kwargs):
         return _nonzero_process()
 
-    async def fake_strict_enumerate(*, env):
-        observed_envs.append(env)
-        return ["created"]
+    async def fake_session_exists(name, *, env):
+        checks.append((name, env))
+        return name == "created"
 
     monkeypatch.setattr(spawn, "should_escape", AsyncMock(return_value=False))
     monkeypatch.setattr(asyncio, "create_subprocess_shell", fake_shell)
-    monkeypatch.setattr(spawn, "enumerate_sessions_strict", fake_strict_enumerate)
+    monkeypatch.setattr(spawn, "session_exists_strict", fake_session_exists)
 
     ok, error = await spawn.spawn_session(
         "created", "echo {name}; exit 1", env=explicit_env
     )
 
     assert (ok, error) == (True, None)
-    assert observed_envs == [explicit_env]
+    assert checks == [("created", explicit_env)]
+    assert checks[0][1] is explicit_env
 
 
-async def test_timeout_cleanup_wait_is_bounded_before_session_verification(monkeypatch):
-    """A launcher descendant holding pipes cannot extend the timeout forever."""
+async def test_timeout_closes_transport_before_bounded_wait_and_uses_same_env(monkeypatch):
+    """A launcher descendant holding pipes cannot extend timeout cleanup."""
+    explicit_env = {"TMUX_TMPDIR": "/explicit-socket"}
     process = MagicMock()
     process.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
-    process.wait = AsyncMock(side_effect=asyncio.TimeoutError)
     process.kill = MagicMock()
     process._transport = MagicMock()
+
+    async def wait_after_pipes_close():
+        assert process._transport.close.called
+        raise asyncio.TimeoutError
+
+    process.wait = AsyncMock(side_effect=wait_after_pipes_close)
 
     async def fake_shell(_command, **_kwargs):
         return process
 
+    session_exists = AsyncMock(return_value=False)
     monkeypatch.setattr(spawn, "should_escape", AsyncMock(return_value=False))
     monkeypatch.setattr(asyncio, "create_subprocess_shell", fake_shell)
     monkeypatch.setattr(spawn, "SPAWN_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(spawn, "SPAWN_CLEANUP_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(
-        spawn, "enumerate_sessions_strict", AsyncMock(return_value=[])
-    )
+    monkeypatch.setattr(spawn, "session_exists_strict", session_exists)
 
     started = asyncio.get_running_loop().time()
-    ok, error = await spawn.spawn_session("missing", "sleep 30")
+    ok, error = await spawn.spawn_session("missing", "sleep 30", env=explicit_env)
     elapsed = asyncio.get_running_loop().time() - started
 
     assert ok is False
@@ -92,6 +98,9 @@ async def test_timeout_cleanup_wait_is_bounded_before_session_verification(monke
     assert elapsed < 0.2
     process.kill.assert_called_once_with()
     process._transport.close.assert_called_once_with()
+    session_exists.assert_awaited_once_with("missing", env=explicit_env)
+    assert session_exists.await_args.kwargs["env"] is explicit_env
+
 
 async def test_cgroup_escape_spawn_has_the_same_terminal_safety(monkeypatch):
     captured = {}

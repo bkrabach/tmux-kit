@@ -17,7 +17,7 @@ code**. Fixes flow both ways: a change to `tmux-kit` reaches every consumer.
 
 **Public installs (primary path, resolves from PyPI):**
 ```toml
-dependencies = ["tmux-kit==0.1.0"]      # applications pin exact; 0.x has no semver promise
+dependencies = ["tmux-kit==0.6.0"]      # applications pin exact; 0.x has no semver promise
 ```
 
 **Pinned git install** (managed/locked environments that cannot reach public
@@ -25,7 +25,7 @@ PyPI — see muxplex's own `docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan
 §2.3 for the three-shape install runbook this pattern comes from):
 ```toml
 dependencies = [
-  "tmux-kit @ git+https://github.com/bkrabach/tmux-kit.git@v0.1.0",
+  "tmux-kit @ git+https://github.com/bkrabach/tmux-kit.git@v0.6.0",
 ]
 ```
 
@@ -50,7 +50,7 @@ to also want. See `AGENTS.md`'s "Scope" section for the litmus test and the
 worked example (`tmux_kit.labels`, added in 0.3.3, removed in 0.3.4 for
 exactly this reason).
 
-## The public surface (as shipped in 0.2.0) -- THE canonical enumeration
+## The public surface (as shipped in 0.6.0) -- THE canonical enumeration
 
 Stdlib-only (this table). Importing `tmux_kit` pulls in NO web server, no
 fastapi, no pam (enforced by a smoke test). This table is the ONE
@@ -63,7 +63,7 @@ at this one instead.
 | Module | What it gives you |
 |--------|-------------------|
 | `tmux_kit.proc` | `run_tmux()`, `tmux_env(socket_dir)`, `set_env_factory()`, `get_env_factory()`, `default_env()`, `UNSET` (the shared omitted-arg sentinel). **Config is injected, never read** — you install an env factory at startup; the lib never reads your settings file. |
-| `tmux_kit.observe` | `enumerate_sessions()` and `capture_pane()` are lenient polling primitives (empty on subprocess failure); `enumerate_sessions_strict()` and `capture_pane_strict()` preserve the same successful behavior but raise, so an empty result is confirmed. `capture_pane(..., escapes=True)` and `capture_pane_window(..., escapes=True)` preserve ANSI rendering by default; set the keyword-only flag false for visible text. Also `probe_tmux_epoch()`, `capture_pane_metadata()` / `_window`, `pane_is_dead()` (0.2.0 — "is it done, or still going?"), `pane_exit_code()` (0.3.2 — "did it succeed?", via tmux's `#{pane_dead_status}`), session caches + getters (`get_session_cwds()`, ...), `snapshot_all()`. Scrollback paging via absolute-line params (`capture_pane_metadata` + `capture_pane_window`). |
+| `tmux_kit.observe` | `enumerate_sessions()` and `capture_pane()` are lenient polling primitives (empty on subprocess failure); `enumerate_sessions_strict()` and `capture_pane_strict()` preserve the same successful behavior but raise, so an empty result is confirmed. `session_exists_strict()` is the strict, target-only check without inventory-cache side effects. `capture_pane(..., escapes=True)` and `capture_pane_window(..., escapes=True)` preserve ANSI rendering by default; set the keyword-only flag false for visible text. Also `probe_tmux_epoch()`, `capture_pane_metadata()` / `_window`, `pane_is_dead()` (0.2.0 — "is it done, or still going?"), `pane_exit_code()` (0.3.2 — "did it succeed?", via tmux's `#{pane_dead_status}`), session caches + getters (`get_session_cwds()`, ...), `snapshot_all()`. Scrollback paging via absolute-line params (`capture_pane_metadata` + `capture_pane_window`). |
 | `tmux_kit.names` | `is_valid_session_name()`, `is_tmux_stable_name()`, `rename_tmux_session()`, `SESSION_NAME_RE`. **(0.5.0)** also `SESSION_NAME_MAX_LEN` (255) -- the length cap, raised from 64, with `SESSION_NAME_RE` now built FROM it so the two cannot drift. **Quote this constant in your rejection message; never hardcode the number** -- it was 64 before 0.5.0, and a hardcoded "1-64 characters" is exactly what goes stale when a cap moves. 255 is the FILESYSTEM's `NAME_MAX` (a path component is at most 255 BYTES), not tmux's -- tmux has no session-name length limit at all (measured on real tmux 3.4: 64 through 4096 characters all create rc=0 and round-trip at full length). It binds only because a consumer names a DIRECTORY after the session. The cap is a CHARACTER count and `NAME_MAX` is a BYTE budget; those coincide only because the charset is ASCII-only. **If YOUR consumer embeds the name in a longer basename (`<name>.sock`, `<prefix>-<name>/`), you have less than 255 bytes and must enforce your own stricter cap** -- this library cannot know your prefix, and picking one for you would be policy, not mechanism. The charset and leading-character rules (argument injection, path traversal) are unchanged at every length. |
 | `tmux_kit.presence` | `update_manifest()`, `compute_restore_plan()`, `mark_restored()`. Owns the core presence keys; **your app writes its own keys beside them, in its own state dir** — unknown top-level keys round-trip verbatim (contract-tested). |
 | `tmux_kit.bell` | `poll_bell_flag()`, `wait_for_bell()` (0.2.0 — blocks until a bell rings, doesn't just poll once), `build_alert_bell_hook()`. |

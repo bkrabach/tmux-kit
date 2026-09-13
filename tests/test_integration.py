@@ -355,9 +355,6 @@ async def test_timeout_cleans_its_child_without_killing_a_created_tmux_server(
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(
-        spawn_mod, "enumerate_sessions_strict", observe_mod.enumerate_sessions_strict
-    )
     monkeypatch.setattr(spawn_mod, "should_escape", AsyncMock(return_value=False))
     monkeypatch.setattr(spawn_mod, "SPAWN_TIMEOUT_SECONDS", 0.2)
     name = "kit-integ-timeout-created"
@@ -370,14 +367,15 @@ async def test_timeout_cleans_its_child_without_killing_a_created_tmux_server(
     assert name in await observe_mod.enumerate_sessions_strict(env=env)
 
 
-async def test_timeout_returns_when_background_child_keeps_launcher_pipes_open(
+async def test_timeout_closes_transport_before_waiting_for_pipe_holding_descendant(
     tmux_socket, monkeypatch
 ):
-    """A killed launcher must not wait indefinitely for its child's pipes.
+    """Transport close makes timeout success independent of the cleanup bound.
 
-    The shell owns a background ``sleep`` which inherits stdout/stderr. The
-    shell is killed at the timeout, but the child continues briefly; the
-    spawned tmux session remains independently observable.
+    The killed launcher leaves a background descendant holding inherited
+    stdout/stderr. The cleanup allowance is deliberately much larger than
+    spawn's deadline: returning before it proves the local pipes were closed
+    before waiting, while the separately created isolated tmux session lives.
     """
     import tmux_kit.observe as observe_mod
     import tmux_kit.spawn as spawn_mod
@@ -390,12 +388,9 @@ async def test_timeout_returns_when_background_child_keeps_launcher_pipes_open(
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(
-        spawn_mod, "enumerate_sessions_strict", observe_mod.enumerate_sessions_strict
-    )
     monkeypatch.setattr(spawn_mod, "should_escape", AsyncMock(return_value=False))
     monkeypatch.setattr(spawn_mod, "SPAWN_TIMEOUT_SECONDS", 0.1)
-    monkeypatch.setattr(spawn_mod, "SPAWN_CLEANUP_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(spawn_mod, "SPAWN_CLEANUP_TIMEOUT_SECONDS", 3.0)
     name = "kit-integ-timeout-pipes"
 
     started = asyncio.get_running_loop().time()
@@ -410,8 +405,8 @@ async def test_timeout_returns_when_background_child_keeps_launcher_pipes_open(
     elapsed = asyncio.get_running_loop().time() - started
 
     assert (ok, error) == (True, None)
-    assert elapsed < 0.8
-    assert name in await observe_mod.enumerate_sessions_strict(env=env)
+    assert elapsed < 1.0
+    assert await observe_mod.session_exists_strict(name, env=env) is True
 
 
 async def test_timeout_without_session_is_reported_as_failure(monkeypatch):
@@ -421,8 +416,8 @@ async def test_timeout_without_session_is_reported_as_failure(monkeypatch):
     monkeypatch.setattr(spawn_mod, "SPAWN_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(
         spawn_mod,
-        "enumerate_sessions_strict",
-        AsyncMock(return_value=[]),
+        "session_exists_strict",
+        AsyncMock(return_value=False),
     )
     ok, error = await spawn_session("kit-integ-timeout-missing", "sleep 30")
     assert ok is False
