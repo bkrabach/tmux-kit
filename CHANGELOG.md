@@ -3,6 +3,51 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.6.0
+
+### Added
+
+- **`observe.session_exists_strict(name, *, env=UNSET)`** is a strict,
+  names-only `list-sessions` observation for one exact session name. It
+  propagates tmux failures and deliberately leaves enumeration and snapshot
+  caches untouched, making it the right primitive for a create-success
+  decision without turning that decision into an inventory poll.
+- **`keys.split_on_newlines()` and
+  `keys.build_send_text_with_enters_argv()`** provide an opt-in input shape
+  for callers whose panes need actual `Enter` events. The existing
+  `build_send_text_argv()` remains byte-literal and unchanged; CRLF, CR, and
+  LF conversion is never implicit. The new builder returns its enter count so
+  consumers retain control of their own caps.
+
+### Changed
+
+- **Spawn verification is target-only and socket-consistent.** Both the
+  nonzero-exit and timeout paths ask `session_exists_strict()` about the
+  exact requested name using the same resolved environment supplied to the
+  launcher. A same-socket session inventory is no longer needed just to
+  determine whether that name was created.
+- **Plain-text search capture omits ANSI escape sequences.** Rendering
+  capture continues to preserve escapes by default; `api.search()` now asks
+  its paging capture for visible text, so ANSI control bytes cannot become
+  searchable content.
+- **Pane metadata has one strict parser.** `capture_pane_metadata()` and the
+  atomic `capture_pane_window()` now reject empty, incomplete, excessive, or
+  non-integer headers consistently, naming the target and the expected three
+  integer fields. Successful ANSI and paging behavior is unchanged.
+- **Timed-out launchers close local pipe transports before the bounded
+  `proc.wait()`.** A descendant retaining inherited stdout/stderr can no
+  longer make the wait consume its cleanup allowance. This remains local
+  transport cleanup: it may repeat a racing launcher kill request, but never
+  kills a process group or an intentionally created tmux server.
+
+### Compatibility
+
+- The base distribution remains stdlib-only (`dependencies = []`); the
+  optional `cli` and `mcp` extras remain unchanged.
+- This is an additive 0.x release. Existing literal input, rendering capture,
+  and public facade verbs retain their established behavior; no new facade
+  verb is introduced.
+
 ## 0.5.0
 
 ### Changed (BEHAVIORAL, widening only -- nothing previously accepted is now rejected)

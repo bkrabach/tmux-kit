@@ -272,6 +272,30 @@ async def enumerate_sessions_strict(
     return await _enumerate_sessions(strict=True, env=env)
 
 
+async def _run_tmux_with_env(
+    *args: str, env: dict[str, str] | None | object = UNSET
+) -> str:
+    """Run tmux while preserving the package's omitted-``env`` semantics."""
+    if env is UNSET:
+        return await run_tmux(*args)
+    return await run_tmux(*args, env=env)
+
+
+async def session_exists_strict(
+    session_name: str, *, env: dict[str, str] | None | object = UNSET
+) -> bool:
+    """Return whether *session_name* exists, raising if tmux cannot answer.
+
+    This target-only observation deliberately avoids enumeration's metadata
+    parsing and global-cache updates. It is for decisions about one named
+    session, not polling consumers that need a complete inventory.
+    """
+    output = await _run_tmux_with_env(
+        "list-sessions", "-F", "#{session_name}", env=env
+    )
+    return session_name in output.splitlines()
+
+
 async def _enumerate_sessions(
     *, strict: bool, env: dict[str, str] | None | object = UNSET
 ) -> list[str]:
@@ -282,10 +306,7 @@ async def _enumerate_sessions(
             "-F",
             "#{session_name}\t#{window_activity}\t#{session_created}\t#{pane_current_path}",
         )
-        if env is UNSET:
-            output = await run_tmux(*args)
-        else:
-            output = await run_tmux(*args, env=env)
+        output = await _run_tmux_with_env(*args, env=env)
     except (RuntimeError, FileNotFoundError):
         if strict:
             raise
@@ -437,6 +458,23 @@ async def _capture_pane(
 # ---------------------------------------------------------------------------
 
 
+def _parse_pane_metadata(output: str, session_name: str) -> tuple[int, int, int]:
+    """Parse tmux's three-field pane metadata or raise a targeted error."""
+    fields = output.strip().split("\t")
+    try:
+        if len(fields) != 3:
+            raise ValueError("wrong field count")
+        history_size, pane_height, history_limit = (
+            int(field.strip()) for field in fields
+        )
+    except ValueError:
+        raise RuntimeError(
+            f"malformed pane metadata for target {session_name!r}: "
+            f"expected three integer fields, got {output!r}"
+        ) from None
+    return history_size, pane_height, history_limit
+
+
 async def capture_pane_metadata(session_name: str) -> tuple[int, int, int]:
     """Read *session_name*'s current ``(history_size, pane_height,
     history_limit)`` via one capture-free `display-message` call.
@@ -459,16 +497,7 @@ async def capture_pane_metadata(session_name: str) -> tuple[int, int, int]:
         session_name,
         "#{history_size}\t#{pane_height}\t#{history_limit}",
     )
-    fields = output.strip().split("\t")
-    try:
-        if len(fields) != 3:
-            raise ValueError("wrong field count")
-        return tuple(int(field.strip()) for field in fields)  # type: ignore[return-value]
-    except ValueError:
-        raise RuntimeError(
-            f"malformed pane metadata for target {session_name!r}: "
-            f"expected three integer fields, got {output!r}"
-        ) from None
+    return _parse_pane_metadata(output, session_name)
 
 
 async def capture_pane_window(
@@ -489,7 +518,8 @@ async def capture_pane_window(
     that H actually produced, never a value read moments earlier.
 
     Returns ``(history_size, pane_height, history_limit, text)``. Raises
-    RuntimeError if tmux/the session is unreachable (same as `run_tmux`).
+    RuntimeError if tmux/the session is unreachable or returns malformed
+    metadata.
     """
     args = [
         "display-message",
@@ -513,9 +543,7 @@ async def capture_pane_window(
         args += ["-E", str(e)]
     output = await run_tmux(*args)
     header, _, text = output.partition("\n")
-    h_str, _, rest = header.partition("\t")
-    p_str, _, l_str = rest.partition("\t")
-    return int(h_str.strip()), int(p_str.strip()), int(l_str.strip()), text
+    return (*_parse_pane_metadata(header, session_name), text)
 
 
 # ---------------------------------------------------------------------------
