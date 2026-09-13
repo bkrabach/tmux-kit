@@ -58,7 +58,7 @@ import asyncio
 import logging
 import os
 
-from tmux_kit.proc import run_tmux
+from tmux_kit.proc import UNSET, run_tmux
 
 _log = logging.getLogger(__name__)
 
@@ -257,26 +257,35 @@ async def enumerate_sessions() -> list[str]:
     return await _enumerate_sessions(strict=False)
 
 
-async def enumerate_sessions_strict() -> list[str]:
+async def enumerate_sessions_strict(
+    *, env: dict[str, str] | None | object = UNSET
+) -> list[str]:
     """Return session names, raising when the tmux observation fails.
 
     This is the failure-aware counterpart to :func:`enumerate_sessions`.
     An empty list is therefore a confirmed successful observation of an
     empty server, never a substituted subprocess failure.  Its parsing and
     cache-update behavior are otherwise identical to the lenient polling
-    primitive.
+    primitive. Pass *env* to query a caller-selected tmux socket; omitting
+    it retains the normal injected-environment behavior.
     """
-    return await _enumerate_sessions(strict=True)
+    return await _enumerate_sessions(strict=True, env=env)
 
 
-async def _enumerate_sessions(*, strict: bool) -> list[str]:
+async def _enumerate_sessions(
+    *, strict: bool, env: dict[str, str] | None | object = UNSET
+) -> list[str]:
     """Implement strict and lenient enumeration without two parsers."""
     try:
-        output = await run_tmux(
+        args = (
             "list-sessions",
             "-F",
             "#{session_name}\t#{window_activity}\t#{session_created}\t#{pane_current_path}",
         )
+        if env is UNSET:
+            output = await run_tmux(*args)
+        else:
+            output = await run_tmux(*args, env=env)
     except (RuntimeError, FileNotFoundError):
         if strict:
             raise

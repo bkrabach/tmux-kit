@@ -350,23 +350,71 @@ async def test_timeout_cleans_its_child_without_killing_a_created_tmux_server(
     import tmux_kit.observe as observe_mod
     import tmux_kit.spawn as spawn_mod
 
-    async def run_tmux_isolated(*args: str) -> str:
+    env = dict(os.environ)
+    env.pop("TMUX", None)
+
+    async def run_tmux_isolated(*args: str, **kwargs) -> str:
+        assert kwargs.get("env") is env
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(spawn_mod, "enumerate_sessions_strict", observe_mod.enumerate_sessions_strict)
+    monkeypatch.setattr(
+        spawn_mod, "enumerate_sessions_strict", observe_mod.enumerate_sessions_strict
+    )
     monkeypatch.setattr(spawn_mod, "should_escape", AsyncMock(return_value=False))
     monkeypatch.setattr(spawn_mod, "SPAWN_TIMEOUT_SECONDS", 0.2)
     name = "kit-integ-timeout-created"
-    env = dict(os.environ)
-    env.pop("TMUX", None)
     ok, error = await spawn_session(
         name,
         f"tmux -L {tmux_socket} new-session -d -s {{name}} 'sleep 30'; sleep 2",
         env=env,
     )
     assert (ok, error) == (True, None)
-    assert name in await observe_mod.enumerate_sessions_strict()
+    assert name in await observe_mod.enumerate_sessions_strict(env=env)
+
+
+async def test_timeout_returns_when_background_child_keeps_launcher_pipes_open(
+    tmux_socket, monkeypatch
+):
+    """A killed launcher must not wait indefinitely for its child's pipes.
+
+    The shell owns a background ``sleep`` which inherits stdout/stderr. The
+    shell is killed at the timeout, but the child continues briefly; the
+    spawned tmux session remains independently observable.
+    """
+    import tmux_kit.observe as observe_mod
+    import tmux_kit.spawn as spawn_mod
+
+    env = dict(os.environ)
+    env.pop("TMUX", None)
+
+    async def run_tmux_isolated(*args: str, **kwargs) -> str:
+        assert kwargs.get("env") is env
+        return await _run(tmux_socket, *args)
+
+    monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
+    monkeypatch.setattr(
+        spawn_mod, "enumerate_sessions_strict", observe_mod.enumerate_sessions_strict
+    )
+    monkeypatch.setattr(spawn_mod, "should_escape", AsyncMock(return_value=False))
+    monkeypatch.setattr(spawn_mod, "SPAWN_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(spawn_mod, "SPAWN_CLEANUP_TIMEOUT_SECONDS", 0.1)
+    name = "kit-integ-timeout-pipes"
+
+    started = asyncio.get_running_loop().time()
+    ok, error = await spawn_session(
+        name,
+        (
+            f"tmux -L {tmux_socket} new-session -d -s {{name}} 'sleep 30'; "
+            "(sleep 2) & wait"
+        ),
+        env=env,
+    )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert (ok, error) == (True, None)
+    assert elapsed < 0.8
+    assert name in await observe_mod.enumerate_sessions_strict(env=env)
 
 
 async def test_timeout_without_session_is_reported_as_failure(monkeypatch):

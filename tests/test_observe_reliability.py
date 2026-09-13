@@ -29,6 +29,20 @@ async def test_strict_enumeration_propagates_missing_tmux_binary(monkeypatch):
         await observe.enumerate_sessions_strict()
 
 
+async def test_strict_enumeration_forwards_explicit_environment(monkeypatch):
+    environment = {"TMUX_TMPDIR": "/explicit-socket"}
+    mock = AsyncMock(return_value="named\t1\t2\t/path\n")
+    monkeypatch.setattr(observe, "run_tmux", mock)
+
+    assert await observe.enumerate_sessions_strict(env=environment) == ["named"]
+    mock.assert_awaited_once_with(
+        "list-sessions",
+        "-F",
+        "#{session_name}\t#{window_activity}\t#{session_created}\t#{pane_current_path}",
+        env=environment,
+    )
+
+
 async def test_strict_capture_distinguishes_empty_success_from_failure(monkeypatch):
     mock = AsyncMock(return_value="")
     monkeypatch.setattr(observe, "run_tmux", mock)

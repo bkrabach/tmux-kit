@@ -29,12 +29,17 @@ import shlex
 import shutil
 
 from tmux_kit.cgroup import should_escape, wrap_shell_argv
-from tmux_kit.observe import enumerate_sessions, enumerate_sessions_strict
+from tmux_kit.observe import enumerate_sessions_strict
 from tmux_kit.proc import UNSET, default_env
 
 _log = logging.getLogger(__name__)
 
 SPAWN_TIMEOUT_SECONDS = 30
+# Killing a launcher does not close stdout/stderr held by its descendants.
+# Do not let those inherited descriptors turn timeout cleanup into another
+# unbounded wait; the requested tmux session is deliberately outside this
+# cleanup scope and is checked below.
+SPAWN_CLEANUP_TIMEOUT_SECONDS = 1
 
 
 async def spawn_session(
@@ -140,7 +145,13 @@ async def spawn_session(
             # Some commands (amplifier-workspace) create the session then
             # try to attach (which fails without a TTY). If the session
             # exists despite the non-zero exit, treat it as success.
-            sessions = await enumerate_sessions()
+            try:
+                sessions = await enumerate_sessions_strict(env=env)
+            except (RuntimeError, FileNotFoundError) as exc:
+                return False, (
+                    f"Session command exited {proc.returncode} but could not "
+                    f"verify session {name!r}: {exc}"
+                )
             if name in sessions:
                 _log.info(
                     "Session command exited %d but session '%s' exists -- "
@@ -177,12 +188,22 @@ async def spawn_session(
                 proc.kill()
             except ProcessLookupError:
                 pass
-            await proc.wait()
+            try:
+                await asyncio.wait_for(
+                    proc.wait(), timeout=SPAWN_CLEANUP_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                _log.warning(
+                    "Timed out after %ss waiting for terminated launcher %r; "
+                    "continuing to bounded session verification",
+                    SPAWN_CLEANUP_TIMEOUT_SECONDS,
+                    command,
+                )
         # A timeout is not success by itself.  Preserve the established
         # long-lived-template success only when the requested session was
         # positively observed after cleanup.
         try:
-            sessions = await enumerate_sessions_strict()
+            sessions = await enumerate_sessions_strict(env=env)
         except (RuntimeError, FileNotFoundError) as exc:
             return False, (
                 f"Session command timed out after {SPAWN_TIMEOUT_SECONDS}s; "

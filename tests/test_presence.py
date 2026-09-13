@@ -182,13 +182,13 @@ def test_update_manifest_same_server_multiple_deaths_all_tombstoned():
     assert new_manifest["pending_restore"] is None
 
 
-def test_same_epoch_tombstone_prunes_only_the_confirmed_stale_restore_entry():
-    """A confirmed death closes an already-present resurrection path.
+def test_same_epoch_name_collision_never_prunes_older_pending_restore_entry():
+    """A name collision cannot identify records across different epochs.
 
-    The name must be live in the current-epoch session record before it can
-    be pruned from pending_restore; an unrelated cold-start entry remains
-    untouched.  This is positive identity-matched observation, never a TTL
-    or cleanup sweep.
+    The current-epoch ``killed`` record is positively observed dead, but the
+    same name in pending_restore identifies a session from EPOCH_B. Its
+    identity was never re-observed or restored, so it must remain frozen
+    until an explicit restore/forget path calls mark_restored().
     """
     manifest = {
         "schema": 2,
@@ -211,7 +211,7 @@ def test_same_epoch_tombstone_prunes_only_the_confirmed_stale_restore_entry():
 
     assert changed is True
     assert "killed" not in updated["sessions"]
-    assert set(updated["pending_restore"]["sessions"]) == {"unrelated"}
+    assert set(updated["pending_restore"]["sessions"]) == {"killed", "unrelated"}
     assert updated["consumer_key"] == {"preserve": True}
 
 

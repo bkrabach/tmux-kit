@@ -176,7 +176,6 @@ def update_manifest(
     if _same_epoch(epoch_now, epoch_rec):
         # ---- SAME SERVER: presence is authoritative ----
         changed = False
-        tombstoned: set[str] = set()
         for name in live_names:
             if name in sessions:
                 sessions[name]["last_seen_at"] = now
@@ -200,23 +199,19 @@ def update_manifest(
                 # break the "< 1 write/minute" steady-state target).
                 del sessions[name]
                 created_with.pop(name, None)
-                tombstoned.add(name)
                 changed = True
-        pending_restore = manifest.get("pending_restore")
-        if tombstoned and pending_restore:
-            # A name is removed from an existing restore plan only after the
-            # same-server branch positively confirmed its death.  Never use
-            # age, an unavailable server, or a sweep to clean this record.
-            pending_restore = mark_restored(
-                {"pending_restore": pending_restore}, tombstoned
-            )["pending_restore"]
         new_manifest = {
             # S4 (plan §13.3): unknown top-level keys round-trip verbatim.
             **manifest,
             "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
             "epoch": epoch_rec,
             "sessions": sessions,
-            "pending_restore": pending_restore,
+            # A pending_restore record belongs to a previous epoch. A
+            # same-named current-epoch session is a different identity, so
+            # observing its death never proves that the older record was
+            # restored or forgotten. Only an explicit mark_restored() call
+            # may remove an entry from this frozen snapshot.
+            "pending_restore": manifest.get("pending_restore"),
             "created_with": created_with,
         }
         return new_manifest, changed
