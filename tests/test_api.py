@@ -404,7 +404,7 @@ async def test_page_default_reads_recent_count(monkeypatch):
 
     captured = {}
 
-    async def fake_window(name, s, e):
+    async def fake_window(name, s, e, **_kwargs):
         captured["s"], captured["e"] = s, e
         return (1000, 40, 2000, "line1\nline2\n")
 
@@ -425,7 +425,7 @@ async def test_page_absolute_start_converts_to_relative_coordinates(monkeypatch)
 
     captured = {}
 
-    async def fake_window(name, s, e):
+    async def fake_window(name, s, e, **_kwargs):
         captured["s"], captured["e"] = s, e
         return (1000, 40, 2000, "\n".join(["x"] * 10))
 
@@ -442,7 +442,7 @@ async def test_page_reports_saturated_when_history_hits_its_limit(monkeypatch):
     async def fake_metadata(name):
         return (2000, 40, 2000)
 
-    async def fake_window(name, s, e):
+    async def fake_window(name, s, e, **_kwargs):
         return (2000, 40, 2000, "x\n")
 
     monkeypatch.setattr(api.observe, "capture_pane_metadata", fake_metadata)
@@ -461,7 +461,10 @@ async def test_search_plain_substring_match(monkeypatch):
     async def fake_metadata(name):
         return (0, 3, 0)
 
-    async def fake_window(name, s, e):
+    captured = {}
+
+    async def fake_window(name, s, e, **kwargs):
+        captured.update(kwargs)
         return (0, 3, 0, "line one\nERROR: bad\nline three")
 
     monkeypatch.setattr(api.observe, "capture_pane_metadata", fake_metadata)
@@ -471,13 +474,14 @@ async def test_search_plain_substring_match(monkeypatch):
     assert len(result.matches) == 1
     assert result.matches[0].text == "ERROR: bad"
     assert result.truncated is False
+    assert captured == {"escapes": False}
 
 
 async def test_search_regex_mode(monkeypatch):
     async def fake_metadata(name):
         return (0, 5, 0)
 
-    async def fake_window(name, s, e):
+    async def fake_window(name, s, e, **_kwargs):
         return (0, 5, 0, "\n".join(f"item{i}" for i in range(5)))
 
     monkeypatch.setattr(api.observe, "capture_pane_metadata", fake_metadata)
@@ -491,7 +495,7 @@ async def test_search_truncated_when_history_exceeds_max_lines(monkeypatch):
     async def fake_metadata(name):
         return (10000, 5, 0)
 
-    async def fake_window(name, s, e):
+    async def fake_window(name, s, e, **_kwargs):
         return (10000, 5, 0, "\n".join(f"item{i}" for i in range(5)))
 
     monkeypatch.setattr(api.observe, "capture_pane_metadata", fake_metadata)
@@ -505,7 +509,7 @@ async def test_search_truncated_when_match_cap_hit(monkeypatch):
     async def fake_metadata(name):
         return (0, 10, 0)
 
-    async def fake_window(name, s, e):
+    async def fake_window(name, s, e, **_kwargs):
         return (0, 10, 0, "\n".join(["hit"] * 10))
 
     monkeypatch.setattr(api.observe, "capture_pane_metadata", fake_metadata)

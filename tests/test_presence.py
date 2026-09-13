@@ -182,6 +182,39 @@ def test_update_manifest_same_server_multiple_deaths_all_tombstoned():
     assert new_manifest["pending_restore"] is None
 
 
+def test_same_epoch_tombstone_prunes_only_the_confirmed_stale_restore_entry():
+    """A confirmed death closes an already-present resurrection path.
+
+    The name must be live in the current-epoch session record before it can
+    be pruned from pending_restore; an unrelated cold-start entry remains
+    untouched.  This is positive identity-matched observation, never a TTL
+    or cleanup sweep.
+    """
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {
+            "keep-me": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            "killed": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+        },
+        "pending_restore": {
+            "detected_at": 400.0,
+            "lost_epoch": EPOCH_B,
+            "sessions": {
+                "killed": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+                "unrelated": {"first_seen_at": 2.0, "last_seen_at": 2.0},
+            },
+        },
+        "consumer_key": {"preserve": True},
+    }
+    updated, changed = update_manifest(manifest, EPOCH_A, ["keep-me"], now=800.0)
+
+    assert changed is True
+    assert "killed" not in updated["sessions"]
+    assert set(updated["pending_restore"]["sessions"]) == {"unrelated"}
+    assert updated["consumer_key"] == {"preserve": True}
+
+
 # ---------------------------------------------------------------------------
 # update_manifest() -- different server (cold start)
 # ---------------------------------------------------------------------------

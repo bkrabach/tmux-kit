@@ -22,11 +22,13 @@ from tmux_kit.keys import (
     build_exit_copy_mode_argv,
     build_send_key_argv,
     build_send_text_argv,
+    build_send_text_with_enters_argv,
     destructive_action_allowed,
     input_allowed_for_session,
     redact_preview,
     session_matches_allowlist,
     session_target,
+    split_on_newlines,
 )
 
 # ---------------------------------------------------------------------------
@@ -122,6 +124,53 @@ def test_build_send_key_argv_composes_build_exit_copy_mode_argv():
 def test_build_send_key_argv_rejects_non_allowlisted():
     with pytest.raises(ValueError):
         build_send_key_argv("s1", "C-b")
+
+
+def test_split_on_newlines_treats_crlf_cr_and_lf_as_one_enter_each():
+    assert split_on_newlines("a\r\nb\rc\nd") == (["a", "b", "c", "d"], 3)
+    assert split_on_newlines("") == ([""], 0)
+    assert split_on_newlines("\n\n") == (["", "", ""], 2)
+
+
+def test_multiline_builder_uses_one_chained_argv_with_real_enter_events():
+    argv, enters = build_send_text_with_enters_argv("s1", "one\ntwo\r\nthree\rfour\n")
+    assert enters == 4
+    assert argv == [
+        "copy-mode", "-q", "-t", "s1", ";",
+        "send-keys", "-l", "-t", "s1", "--", "one", ";",
+        "send-keys", "-t", "s1", "Enter", ";",
+        "send-keys", "-l", "-t", "s1", "--", "two", ";",
+        "send-keys", "-t", "s1", "Enter", ";",
+        "send-keys", "-l", "-t", "s1", "--", "three", ";",
+        "send-keys", "-t", "s1", "Enter", ";",
+        "send-keys", "-l", "-t", "s1", "--", "four", ";",
+        "send-keys", "-t", "s1", "Enter",
+    ]
+
+
+def test_multiline_builder_handles_empty_and_trailing_segments_without_empty_send():
+    assert build_send_text_with_enters_argv("", "") == ([], 0)
+    argv, enters = build_send_text_with_enters_argv("s1", "\ntext\n")
+    assert enters == 2
+    assert "send-keys" in argv
+    assert "" not in argv
+
+
+def test_multiline_builder_keeps_hostile_text_literal_and_targets_exactly():
+    hostile = "-rf ; $(reboot) `id`\nnext"
+    argv, enters = build_send_text_with_enters_argv("s1", hostile)
+    assert enters == 1
+    assert argv.count(";") == 3  # our command separators only
+    assert hostile.split("\n")[0] in argv
+    literal_index = argv.index(hostile.split("\n")[0])
+    assert argv[literal_index - 1] == "--"
+    assert all(
+        argv[i + 1] == "s1" for i, value in enumerate(argv[:-1]) if value == "-t"
+    )
+
+
+def test_singular_literal_builder_still_passes_newline_through_verbatim():
+    assert build_send_text_argv("s1", "cmd\n")[-1] == "cmd\n"
 
 
 def test_build_exit_copy_mode_argv_shape():

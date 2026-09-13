@@ -29,10 +29,12 @@ import shlex
 import shutil
 
 from tmux_kit.cgroup import should_escape, wrap_shell_argv
-from tmux_kit.observe import enumerate_sessions
+from tmux_kit.observe import enumerate_sessions, enumerate_sessions_strict
 from tmux_kit.proc import UNSET, default_env
 
 _log = logging.getLogger(__name__)
+
+SPAWN_TIMEOUT_SECONDS = 30
 
 
 async def spawn_session(
@@ -110,23 +112,28 @@ async def spawn_session(
 
     command = template.replace("{name}", shlex.quote(name))
     _log.info("Creating session '%s' with command: %s", name, command)
+    proc: asyncio.subprocess.Process | None = None
     try:
         if await should_escape():
             proc = await asyncio.create_subprocess_exec(
                 *wrap_shell_argv(command),
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,  # type: ignore[arg-type]
+                start_new_session=True,
             )
         else:
             proc = await asyncio.create_subprocess_shell(
                 command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,  # type: ignore[arg-type]
+                start_new_session=True,
             )
         _stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=30
+            proc.communicate(), timeout=SPAWN_TIMEOUT_SECONDS
         )
         if proc.returncode != 0:
             stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
@@ -154,14 +161,38 @@ async def spawn_session(
                     else f"Session command failed with exit code {proc.returncode}"
                 )
     except asyncio.TimeoutError:
-        _log.info(
-            "Session command still running after 30s (may be long-lived): %s",
+        _log.warning(
+            "Session command still running after %ss; terminating its launcher: %s",
+            SPAWN_TIMEOUT_SECONDS,
             command,
         )
-        # Long-running session commands (e.g. amplifier-workspace that
-        # spawns background processes) may outlive the 30s window. This is
-        # not necessarily an error -- return success and let the caller
-        # poll for the session to appear.
+        # ``wait_for`` cancels the wait, not the child.  Terminate only the
+        # launcher process, not its process group: tmux's server can still be
+        # in that group while it finishes daemonizing, and a group kill would
+        # turn a successfully-created session into a false failure.  The
+        # launcher's new session and /dev/null stdin still protect the caller
+        # from a hung TTY attach.
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+        # A timeout is not success by itself.  Preserve the established
+        # long-lived-template success only when the requested session was
+        # positively observed after cleanup.
+        try:
+            sessions = await enumerate_sessions_strict()
+        except (RuntimeError, FileNotFoundError) as exc:
+            return False, (
+                f"Session command timed out after {SPAWN_TIMEOUT_SECONDS}s; "
+                f"could not verify session {name!r}: {exc}"
+            )
+        if name not in sessions:
+            return False, (
+                f"Session command timed out after {SPAWN_TIMEOUT_SECONDS}s "
+                f"without creating session {name!r}"
+            )
     except Exception as exc:
         _log.warning("Failed to launch session command %r: %s", command, exc)
         return False, f"Failed to launch command: {exc}"
