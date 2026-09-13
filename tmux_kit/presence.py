@@ -206,6 +206,11 @@ def update_manifest(
             "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
             "epoch": epoch_rec,
             "sessions": sessions,
+            # A pending_restore record belongs to a previous epoch. A
+            # same-named current-epoch session is a different identity, so
+            # observing its death never proves that the older record was
+            # restored or forgotten. Only an explicit mark_restored() call
+            # may remove an entry from this frozen snapshot.
             "pending_restore": manifest.get("pending_restore"),
             "created_with": created_with,
         }

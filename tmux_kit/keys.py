@@ -33,6 +33,7 @@ Security model (see the endpoint in main.py for the enforcement order):
 """
 
 import fnmatch
+import re
 
 # Closed allowlist of named special keys an agent may send. These are tmux
 # key names (see tmux(1) "KEY BINDINGS"). Kept deliberately small: enough to
@@ -70,6 +71,10 @@ PREVIEW_CHARS = 16
 #   interactive sequence.
 MAX_TEXT_BYTES = 8192
 MAX_KEYS = 64
+
+# CRLF, bare CR, and bare LF each describe one line ending.  CRLF must be
+# matched first so it cannot become two Enter events.
+_NEWLINE = re.compile(r"\r\n|\r|\n")
 
 
 def session_target(name: str) -> str:
@@ -298,13 +303,13 @@ def build_send_text_argv(name: str, text: str) -> list[str]:
     return [
         *build_exit_copy_mode_argv(name),
         ";",
-        "send-keys",
-        "-l",
-        "-t",
-        session_target(name),
-        "--",
-        text,
+        *_build_literal_send_argv(name, text),
     ]
+
+
+def _build_literal_send_argv(name: str, text: str) -> list[str]:
+    """The literal-send command portion shared by the text builders."""
+    return ["send-keys", "-l", "-t", session_target(name), "--", text]
 
 
 def build_send_key_argv(name: str, key: str) -> list[str]:
@@ -337,11 +342,54 @@ def build_send_key_argv(name: str, key: str) -> list[str]:
     return [
         *build_exit_copy_mode_argv(name),
         ";",
-        "send-keys",
-        "-t",
-        session_target(name),
-        key,
+        *_build_key_send_argv(name, key),
     ]
+
+
+def _build_key_send_argv(name: str, key: str) -> list[str]:
+    """The validated named-key command portion shared by key-event builders."""
+    return ["send-keys", "-t", session_target(name), key]
+
+
+def split_on_newlines(text: str) -> tuple[list[str], int]:
+    """Split *text* into literal segments and count its line endings.
+
+    ``len(segments) == enter_count + 1`` always.  A CRLF pair, bare CR, and
+    bare LF each count as one ending, preserving empty and trailing segments.
+    This function is pure: callers choose whether the count fits their input
+    policy.
+    """
+    segments = _NEWLINE.split(text)
+    return segments, len(segments) - 1
+
+
+def build_send_text_with_enters_argv(name: str, text: str) -> tuple[list[str], int]:
+    """Build one chained argv that types *text* and turns line endings into Enter.
+
+    Unlike :func:`build_send_text_argv`, which preserves every byte in its
+    singular literal payload, this opt-in helper maps CRLF, CR, and LF to
+    real ``Enter`` key events.  This is necessary for raw-mode panes, where
+    a literal LF is Ctrl-J rather than the CR emitted by an Enter key.
+
+    The returned ``(argv, enter_count)`` contains one tmux invocation,
+    keeping copy-mode exit and all deliveries in the same server command-loop
+    tick.  Empty literal segments add no pointless ``send-keys -l -- ""``
+    command, but every line ending still adds its Enter.  Empty *text* returns
+    ``([], 0)`` and performs no operation.  The count is exposed so a caller
+    can apply its own cap; this module deliberately does not add policy.
+    """
+    segments, enter_count = split_on_newlines(text)
+    if not text:
+        return [], enter_count
+
+    argv = build_exit_copy_mode_argv(name)
+    last = len(segments) - 1
+    for index, segment in enumerate(segments):
+        if segment:
+            argv += [";", *_build_literal_send_argv(name, segment)]
+        if index < last:
+            argv += [";", *_build_key_send_argv(name, "Enter")]
+    return argv, enter_count
 
 
 def redact_preview(text: str, limit: int = PREVIEW_CHARS) -> str:

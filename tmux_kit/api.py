@@ -568,7 +568,9 @@ async def search(
     )
     available = history_size + pane_height
     window = min(available, max_lines)
-    _h2, _p2, _l2, text = await observe.capture_pane_window(name, -window, None)
+    _h2, _p2, _l2, text = await observe.capture_pane_window(
+        name, -window, None, escapes=False
+    )
     lines = text.splitlines()
     start_abs = max(0, available - len(lines))
     truncated = available > window

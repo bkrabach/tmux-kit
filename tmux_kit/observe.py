@@ -58,7 +58,7 @@ import asyncio
 import logging
 import os
 
-from tmux_kit.proc import run_tmux
+from tmux_kit.proc import UNSET, run_tmux
 
 _log = logging.getLogger(__name__)
 
@@ -254,13 +254,41 @@ async def enumerate_sessions() -> list[str]:
 
     Returns [] if tmux is not running (RuntimeError from run_tmux).
     """
+    return await _enumerate_sessions(strict=False)
+
+
+async def enumerate_sessions_strict(
+    *, env: dict[str, str] | None | object = UNSET
+) -> list[str]:
+    """Return session names, raising when the tmux observation fails.
+
+    This is the failure-aware counterpart to :func:`enumerate_sessions`.
+    An empty list is therefore a confirmed successful observation of an
+    empty server, never a substituted subprocess failure.  Its parsing and
+    cache-update behavior are otherwise identical to the lenient polling
+    primitive. Pass *env* to query a caller-selected tmux socket; omitting
+    it retains the normal injected-environment behavior.
+    """
+    return await _enumerate_sessions(strict=True, env=env)
+
+
+async def _enumerate_sessions(
+    *, strict: bool, env: dict[str, str] | None | object = UNSET
+) -> list[str]:
+    """Implement strict and lenient enumeration without two parsers."""
     try:
-        output = await run_tmux(
+        args = (
             "list-sessions",
             "-F",
             "#{session_name}\t#{window_activity}\t#{session_created}\t#{pane_current_path}",
         )
+        if env is UNSET:
+            output = await run_tmux(*args)
+        else:
+            output = await run_tmux(*args, env=env)
     except (RuntimeError, FileNotFoundError):
+        if strict:
+            raise
         return []
 
     names: list[str] = []
@@ -329,24 +357,50 @@ DEFAULT_CAPTURE_LINES = 30
 MAX_CAPTURE_LINES = 2000
 
 
-async def capture_pane(session_name: str, lines: int = DEFAULT_CAPTURE_LINES) -> str:
+async def capture_pane(
+    session_name: str, lines: int = DEFAULT_CAPTURE_LINES, *, escapes: bool = True
+) -> str:
     """Capture the last *lines* lines of output from *session_name*.
 
-    Returns the captured text, or '' on any error. *lines* is caller-trusted
-    here (bounds enforcement lives at the API boundary in main.py, alongside
-    the other /input size caps) -- this function only performs the tmux call.
+    Returns the captured text, or '' on any subprocess error. *lines* is
+    caller-trusted here (bounds enforcement lives at the API boundary in
+    main.py, alongside the other /input size caps) -- this function only
+    performs the tmux call.
+
+    ``escapes=True`` preserves the historic rendering-oriented behavior:
+    ANSI sequences are retained.  Pass ``escapes=False`` for visible-text
+    consumers such as a search; it omits ``capture-pane -e``.  Callers that
+    must distinguish a blank pane from an unavailable tmux server use
+    :func:`capture_pane_strict`.
     """
+    return await _capture_pane(session_name, lines, escapes=escapes, strict=False)
+
+
+async def capture_pane_strict(
+    session_name: str, lines: int = DEFAULT_CAPTURE_LINES, *, escapes: bool = True
+) -> str:
+    """Capture pane text, raising if tmux cannot complete the observation.
+
+    A returned empty string is a confirmed blank capture.  ``RuntimeError``
+    from tmux and ``FileNotFoundError`` for a missing tmux binary propagate
+    unchanged.  ``escapes`` has the same rendering/plain-text meaning as
+    :func:`capture_pane`.
+    """
+    return await _capture_pane(session_name, lines, escapes=escapes, strict=True)
+
+
+async def _capture_pane(
+    session_name: str, lines: int, *, escapes: bool, strict: bool
+) -> str:
+    args = ["capture-pane"]
+    if escapes:
+        args.append("-e")
+    args += ["-p", "-t", session_name, "-S", f"-{lines}"]
     try:
-        return await run_tmux(
-            "capture-pane",
-            "-e",  # preserve ANSI escape sequences for color rendering
-            "-p",
-            "-t",
-            session_name,
-            "-S",
-            f"-{lines}",
-        )
-    except RuntimeError:
+        return await run_tmux(*args)
+    except (RuntimeError, FileNotFoundError):
+        if strict:
+            raise
         return ""
 
 
@@ -405,13 +459,20 @@ async def capture_pane_metadata(session_name: str) -> tuple[int, int, int]:
         session_name,
         "#{history_size}\t#{pane_height}\t#{history_limit}",
     )
-    h_str, _, rest = output.partition("\t")
-    p_str, _, l_str = rest.partition("\t")
-    return int(h_str.strip()), int(p_str.strip()), int(l_str.strip())
+    fields = output.strip().split("\t")
+    try:
+        if len(fields) != 3:
+            raise ValueError("wrong field count")
+        return tuple(int(field.strip()) for field in fields)  # type: ignore[return-value]
+    except ValueError:
+        raise RuntimeError(
+            f"malformed pane metadata for target {session_name!r}: "
+            f"expected three integer fields, got {output!r}"
+        ) from None
 
 
 async def capture_pane_window(
-    session_name: str, s: int, e: int | None
+    session_name: str, s: int, e: int | None, *, escapes: bool = True
 ) -> tuple[int, int, int, str]:
     """Atomically read ``(history_size, pane_height, history_limit)``
     together with a `capture-pane` window at tmux-relative coordinates
@@ -438,7 +499,10 @@ async def capture_pane_window(
         "#{history_size}\t#{pane_height}\t#{history_limit}",
         ";",
         "capture-pane",
-        "-e",  # preserve ANSI escape sequences for color rendering
+    ]
+    if escapes:
+        args.append("-e")  # preserve ANSI escape sequences for color rendering
+    args += [
         "-p",
         "-t",
         session_name,

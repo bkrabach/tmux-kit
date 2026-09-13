@@ -29,10 +29,30 @@ import shlex
 import shutil
 
 from tmux_kit.cgroup import should_escape, wrap_shell_argv
-from tmux_kit.observe import enumerate_sessions
+from tmux_kit.observe import enumerate_sessions_strict
 from tmux_kit.proc import UNSET, default_env
 
 _log = logging.getLogger(__name__)
+
+SPAWN_TIMEOUT_SECONDS = 30
+# Killing a launcher does not close stdout/stderr held by its descendants.
+# Do not let those inherited descriptors turn timeout cleanup into another
+# unbounded wait; the requested tmux session is deliberately outside this
+# cleanup scope and is checked below.
+SPAWN_CLEANUP_TIMEOUT_SECONDS = 1
+
+
+def _close_launcher_transport(proc: asyncio.subprocess.Process) -> None:
+    """Close this process's pipe ends after a timed-out launcher is killed.
+
+    A descendant can retain stdout/stderr after the launcher has exited. The
+    subprocess transport owns our corresponding pipe ends; closing those ends
+    releases the event-loop resources without signalling the descendant's
+    process group (and therefore without touching a created tmux server).
+    """
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
 
 
 async def spawn_session(
@@ -110,30 +130,41 @@ async def spawn_session(
 
     command = template.replace("{name}", shlex.quote(name))
     _log.info("Creating session '%s' with command: %s", name, command)
+    proc: asyncio.subprocess.Process | None = None
     try:
         if await should_escape():
             proc = await asyncio.create_subprocess_exec(
                 *wrap_shell_argv(command),
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,  # type: ignore[arg-type]
+                start_new_session=True,
             )
         else:
             proc = await asyncio.create_subprocess_shell(
                 command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,  # type: ignore[arg-type]
+                start_new_session=True,
             )
         _stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=30
+            proc.communicate(), timeout=SPAWN_TIMEOUT_SECONDS
         )
         if proc.returncode != 0:
             stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
             # Some commands (amplifier-workspace) create the session then
             # try to attach (which fails without a TTY). If the session
             # exists despite the non-zero exit, treat it as success.
-            sessions = await enumerate_sessions()
+            try:
+                sessions = await enumerate_sessions_strict(env=env)
+            except (RuntimeError, FileNotFoundError) as exc:
+                return False, (
+                    f"Session command exited {proc.returncode} but could not "
+                    f"verify session {name!r}: {exc}"
+                )
             if name in sessions:
                 _log.info(
                     "Session command exited %d but session '%s' exists -- "
@@ -154,14 +185,53 @@ async def spawn_session(
                     else f"Session command failed with exit code {proc.returncode}"
                 )
     except asyncio.TimeoutError:
-        _log.info(
-            "Session command still running after 30s (may be long-lived): %s",
+        _log.warning(
+            "Session command still running after %ss; terminating its launcher: %s",
+            SPAWN_TIMEOUT_SECONDS,
             command,
         )
-        # Long-running session commands (e.g. amplifier-workspace that
-        # spawns background processes) may outlive the 30s window. This is
-        # not necessarily an error -- return success and let the caller
-        # poll for the session to appear.
+        # ``wait_for`` cancels the wait, not the child.  Terminate only the
+        # launcher process, not its process group: tmux's server can still be
+        # in that group while it finishes daemonizing, and a group kill would
+        # turn a successfully-created session into a false failure.  The
+        # launcher's new session and /dev/null stdin still protect the caller
+        # from a hung TTY attach.
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(
+                    proc.wait(), timeout=SPAWN_CLEANUP_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                _log.warning(
+                    "Timed out after %ss waiting for terminated launcher %r; "
+                    "continuing to bounded session verification",
+                    SPAWN_CLEANUP_TIMEOUT_SECONDS,
+                    command,
+                )
+            finally:
+                # communicate() was cancelled by the spawn timeout. Close our
+                # pipe transports even if a descendant keeps its inherited
+                # descriptor open; only the launcher itself was killed above.
+                _close_launcher_transport(proc)
+        # A timeout is not success by itself.  Preserve the established
+        # long-lived-template success only when the requested session was
+        # positively observed after cleanup.
+        try:
+            sessions = await enumerate_sessions_strict(env=env)
+        except (RuntimeError, FileNotFoundError) as exc:
+            return False, (
+                f"Session command timed out after {SPAWN_TIMEOUT_SECONDS}s; "
+                f"could not verify session {name!r}: {exc}"
+            )
+        if name not in sessions:
+            return False, (
+                f"Session command timed out after {SPAWN_TIMEOUT_SECONDS}s "
+                f"without creating session {name!r}"
+            )
     except Exception as exc:
         _log.warning("Failed to launch session command %r: %s", command, exc)
         return False, f"Failed to launch command: {exc}"

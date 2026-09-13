@@ -19,11 +19,16 @@ autouse `TMUX_TMPDIR` isolation.
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 import subprocess
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from tmux_kit.bell import poll_bell_flag
+from tmux_kit import api
+from tmux_kit.keys import build_send_text_with_enters_argv
 from tmux_kit.names import (
     SESSION_NAME_MAX_LEN,
     is_valid_session_name,
@@ -71,7 +76,6 @@ async def test_spawn_enumerate_capture_round_trip(tmux_socket, monkeypatch):
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(spawn_mod, "enumerate_sessions", observe_mod.enumerate_sessions)
 
     name = "kit-integ-1"
     ok, err = await spawn_session(
@@ -109,7 +113,6 @@ async def test_real_tmux_accepts_a_name_at_the_full_length_cap(
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(spawn_mod, "enumerate_sessions", observe_mod.enumerate_sessions)
 
     name = "k" * SESSION_NAME_MAX_LEN
     assert is_valid_session_name(name), "the cap's own regex must accept this"
@@ -144,7 +147,6 @@ async def test_real_tmux_would_have_accepted_the_old_cap_plus_one(
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(spawn_mod, "enumerate_sessions", observe_mod.enumerate_sessions)
 
     name = "k" * 65  # one past the pre-0.5.0 cap
     ok, err = await spawn_session(
@@ -265,3 +267,163 @@ async def test_poll_bell_flag_sees_a_real_bell(tmux_socket, monkeypatch):
     # real tmux output.
     result = await poll_bell_flag(name)
     assert result is False
+
+
+async def test_plain_capture_allows_search_to_find_interleaved_ansi_text(
+    tmux_socket, monkeypatch
+):
+    """Search must inspect visible text, not terminal-rendering control bytes."""
+    import tmux_kit.observe as observe_mod
+
+    async def run_tmux_isolated(*args: str) -> str:
+        return await _run(tmux_socket, *args)
+
+    monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
+    name = "kit-integ-ansi-search"
+    # Escape sequences between visible letters make "ERROR" absent from the
+    # rendering-preserving capture even though it is visibly printed.
+    command = (
+        r"printf '\033[31mE\033[0m\033[32mR\033[0m\033[33mR\033[0m"
+        r"\033[34mO\033[0m\033[35mR\033[0m\n'; sleep 30"
+    )
+    await _run(tmux_socket, "new-session", "-d", "-s", name, command)
+
+    _h, _p, _l, rendered = await observe_mod.capture_pane_window(name, -30, None)
+    assert "ERROR" not in rendered
+    result = await api.search(name, "ERROR")
+    assert [match.text for match in result.matches] == ["ERROR"]
+
+
+async def test_multiline_helper_delivers_enter_bytes_in_raw_mode_and_exits_copy_mode(
+    tmux_socket,
+):
+    """Real raw-mode proof: LF payloads are not relied on for submission."""
+    name = "kit-integ-raw"
+    script = (
+        "import os, tty\n"
+        "tty.setraw(0)\n"
+        "print('READY', flush=True)\n"
+        "data = b''\n"
+        "while data.count(b'\\r') < 4:\n"
+        "    data += os.read(0, 1)\n"
+        "print('RAW:' + data.hex(), flush=True)\n"
+    )
+    await _run(
+        tmux_socket,
+        "new-session",
+        "-d",
+        "-s",
+        name,
+        f"python3 -u -c {shlex.quote(script)}",
+    )
+    await _run(tmux_socket, "set-option", "-t", name, "remain-on-exit", "on")
+    for _ in range(20):
+        output = await _run(tmux_socket, "capture-pane", "-p", "-t", name)
+        if "READY" in output:
+            break
+        await asyncio.sleep(0.05)
+    assert "READY" in output
+    # Make delivery depend on the helper's built-in copy-mode exit.
+    await _run(tmux_socket, "copy-mode", "-t", name)
+    argv, enter_count = build_send_text_with_enters_argv(
+        name, "one\ntwo\r\nthree\rfour\n"
+    )
+    assert enter_count == 4
+    await _run(tmux_socket, *argv)
+
+    marker = "RAW:" + b"one\rtwo\rthree\rfour\r".hex()
+    for _ in range(20):
+        output = await _run(tmux_socket, "capture-pane", "-p", "-t", name)
+        if marker in output:
+            break
+        await asyncio.sleep(0.05)
+    assert marker in output
+
+
+async def test_timeout_cleans_its_child_without_killing_a_created_tmux_server(
+    tmux_socket, monkeypatch
+):
+    """Timeout success needs a real session observed after child cleanup."""
+    import tmux_kit.observe as observe_mod
+    import tmux_kit.spawn as spawn_mod
+
+    env = dict(os.environ)
+    env.pop("TMUX", None)
+
+    async def run_tmux_isolated(*args: str, **kwargs) -> str:
+        assert kwargs.get("env") is env
+        return await _run(tmux_socket, *args)
+
+    monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
+    monkeypatch.setattr(
+        spawn_mod, "enumerate_sessions_strict", observe_mod.enumerate_sessions_strict
+    )
+    monkeypatch.setattr(spawn_mod, "should_escape", AsyncMock(return_value=False))
+    monkeypatch.setattr(spawn_mod, "SPAWN_TIMEOUT_SECONDS", 0.2)
+    name = "kit-integ-timeout-created"
+    ok, error = await spawn_session(
+        name,
+        f"tmux -L {tmux_socket} new-session -d -s {{name}} 'sleep 30'; sleep 2",
+        env=env,
+    )
+    assert (ok, error) == (True, None)
+    assert name in await observe_mod.enumerate_sessions_strict(env=env)
+
+
+async def test_timeout_returns_when_background_child_keeps_launcher_pipes_open(
+    tmux_socket, monkeypatch
+):
+    """A killed launcher must not wait indefinitely for its child's pipes.
+
+    The shell owns a background ``sleep`` which inherits stdout/stderr. The
+    shell is killed at the timeout, but the child continues briefly; the
+    spawned tmux session remains independently observable.
+    """
+    import tmux_kit.observe as observe_mod
+    import tmux_kit.spawn as spawn_mod
+
+    env = dict(os.environ)
+    env.pop("TMUX", None)
+
+    async def run_tmux_isolated(*args: str, **kwargs) -> str:
+        assert kwargs.get("env") is env
+        return await _run(tmux_socket, *args)
+
+    monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
+    monkeypatch.setattr(
+        spawn_mod, "enumerate_sessions_strict", observe_mod.enumerate_sessions_strict
+    )
+    monkeypatch.setattr(spawn_mod, "should_escape", AsyncMock(return_value=False))
+    monkeypatch.setattr(spawn_mod, "SPAWN_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(spawn_mod, "SPAWN_CLEANUP_TIMEOUT_SECONDS", 0.1)
+    name = "kit-integ-timeout-pipes"
+
+    started = asyncio.get_running_loop().time()
+    ok, error = await spawn_session(
+        name,
+        (
+            f"tmux -L {tmux_socket} new-session -d -s {{name}} 'sleep 30'; "
+            "(sleep 2) & wait"
+        ),
+        env=env,
+    )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert (ok, error) == (True, None)
+    assert elapsed < 0.8
+    assert name in await observe_mod.enumerate_sessions_strict(env=env)
+
+
+async def test_timeout_without_session_is_reported_as_failure(monkeypatch):
+    import tmux_kit.spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "should_escape", AsyncMock(return_value=False))
+    monkeypatch.setattr(spawn_mod, "SPAWN_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(
+        spawn_mod,
+        "enumerate_sessions_strict",
+        AsyncMock(return_value=[]),
+    )
+    ok, error = await spawn_session("kit-integ-timeout-missing", "sleep 30")
+    assert ok is False
+    assert "without creating session" in (error or "")

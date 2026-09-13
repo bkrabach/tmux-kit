@@ -182,6 +182,39 @@ def test_update_manifest_same_server_multiple_deaths_all_tombstoned():
     assert new_manifest["pending_restore"] is None
 
 
+def test_same_epoch_name_collision_never_prunes_older_pending_restore_entry():
+    """A name collision cannot identify records across different epochs.
+
+    The current-epoch ``killed`` record is positively observed dead, but the
+    same name in pending_restore identifies a session from EPOCH_B. Its
+    identity was never re-observed or restored, so it must remain frozen
+    until an explicit restore/forget path calls mark_restored().
+    """
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {
+            "keep-me": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            "killed": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+        },
+        "pending_restore": {
+            "detected_at": 400.0,
+            "lost_epoch": EPOCH_B,
+            "sessions": {
+                "killed": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+                "unrelated": {"first_seen_at": 2.0, "last_seen_at": 2.0},
+            },
+        },
+        "consumer_key": {"preserve": True},
+    }
+    updated, changed = update_manifest(manifest, EPOCH_A, ["keep-me"], now=800.0)
+
+    assert changed is True
+    assert "killed" not in updated["sessions"]
+    assert set(updated["pending_restore"]["sessions"]) == {"killed", "unrelated"}
+    assert updated["consumer_key"] == {"preserve": True}
+
+
 # ---------------------------------------------------------------------------
 # update_manifest() -- different server (cold start)
 # ---------------------------------------------------------------------------
