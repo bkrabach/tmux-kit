@@ -37,7 +37,6 @@ def _mock_proc(returncode: int = 0):
 
 async def _spawn_and_capture_env(monkeypatch, **spawn_kwargs):
     monkeypatch.setattr(spawn_mod, "should_escape", AsyncMock(return_value=False))
-    monkeypatch.setattr(spawn_mod, "enumerate_sessions", AsyncMock(return_value=["x"]))
     captured: dict = {}
 
     async def fake_create_subprocess_shell(command, **kwargs):

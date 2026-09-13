@@ -76,7 +76,6 @@ async def test_spawn_enumerate_capture_round_trip(tmux_socket, monkeypatch):
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(spawn_mod, "enumerate_sessions", observe_mod.enumerate_sessions)
 
     name = "kit-integ-1"
     ok, err = await spawn_session(
@@ -114,7 +113,6 @@ async def test_real_tmux_accepts_a_name_at_the_full_length_cap(
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(spawn_mod, "enumerate_sessions", observe_mod.enumerate_sessions)
 
     name = "k" * SESSION_NAME_MAX_LEN
     assert is_valid_session_name(name), "the cap's own regex must accept this"
@@ -149,7 +147,6 @@ async def test_real_tmux_would_have_accepted_the_old_cap_plus_one(
         return await _run(tmux_socket, *args)
 
     monkeypatch.setattr(observe_mod, "run_tmux", run_tmux_isolated)
-    monkeypatch.setattr(spawn_mod, "enumerate_sessions", observe_mod.enumerate_sessions)
 
     name = "k" * 65  # one past the pre-0.5.0 cap
     ok, err = await spawn_session(
