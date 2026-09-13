@@ -131,7 +131,14 @@ async def test_capture_escapes_is_keyword_only_and_defaults_to_rendering(monkeyp
 
 
 @pytest.mark.parametrize(
-    "output", ["", "0\t24\n", "0\t24\t50000\textra\n", "nope\t24\t50000\n"]
+    "output",
+    [
+        "",
+        "0\t24\n",
+        "0\t24\t50000\t\n",
+        "0\t24\t50000\textra\n",
+        "nope\t24\t50000\n",
+    ],
 )
 async def test_both_metadata_callers_reject_malformed_headers(monkeypatch, output):
     mock = AsyncMock(return_value=output)

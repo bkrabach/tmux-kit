@@ -460,7 +460,7 @@ async def _capture_pane(
 
 def _parse_pane_metadata(output: str, session_name: str) -> tuple[int, int, int]:
     """Parse tmux's three-field pane metadata or raise a targeted error."""
-    fields = output.strip().split("\t")
+    fields = output.rstrip("\r\n").split("\t")
     try:
         if len(fields) != 3:
             raise ValueError("wrong field count")
