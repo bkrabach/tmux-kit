@@ -61,6 +61,25 @@ exists. `tmux_kit.proc.set_env_factory()` is how a consumer supplies its own
 socket-dir resolution; don't reach for `os.environ` reads scattered through
 the library as a shortcut.
 
+## Scoped observation is non-owning and never falls back
+
+`tmux_kit.scope.TmuxScope` is the narrow, unreleased observation seam for a
+consumer that supplies a socket pathname. User-home notation is expanded once
+in the caller's environment, then the path must be absolute; `env` controls
+only the child subprocess environment. It never discovers, starts, changes,
+stops, caches, or tears down that server; its
+environment is a construction-time private snapshot and every call uses
+explicit `-S`, never the process-global env factory or `observe`'s globals.
+An unavailable socket or missing exact session raises contextually -- it must
+never turn into an empty server/pane result. Malformed active-pane records and
+pane metadata also raise. Session enumeration retains the shared parser's
+per-field tolerance: malformed activity/creation fields are logged and omitted.
+Keep application acceptance, execution, and uncertain input-resend decisions
+outside this library.
+
+`list-panes` targets a window: use `=<session>:` for strict session matching;
+the real-tmux regression proves `=<session>` can resolve a longer session name.
+
 ## The two safety rails (`tests/test_rails.py`) — do not weaken either
 
 Both map to real production incidents (see muxplex's own `AGENTS.md` for the

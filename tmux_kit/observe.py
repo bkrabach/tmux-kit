@@ -312,6 +312,25 @@ async def _enumerate_sessions(
             raise
         return []
 
+    names, activity, created, cwds = _parse_session_listing(output)
+
+    global _activity, _created, _cwds
+    _activity = activity
+    _created = created
+    _cwds = cwds
+    return names
+
+
+def _parse_session_listing(
+    output: str,
+) -> tuple[list[str], dict[str, float], dict[str, float], dict[str, str]]:
+    """Parse the four-column ``list-sessions`` output without side effects.
+
+    This preserves the legacy enumeration parser's deliberate tolerance:
+    malformed per-session metadata is logged and omitted, while usable names
+    remain observable.  Scoped observation uses this helper so its result does
+    not mutate this module's polling caches.
+    """
     names: list[str] = []
     activity: dict[str, float] = {}
     created: dict[str, float] = {}
@@ -351,11 +370,7 @@ async def _enumerate_sessions(
                     created_field,
                 )
 
-    global _activity, _created, _cwds
-    _activity = activity
-    _created = created
-    _cwds = cwds
-    return names
+    return names, activity, created, cwds
 
 
 # ---------------------------------------------------------------------------

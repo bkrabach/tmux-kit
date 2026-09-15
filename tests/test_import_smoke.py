@@ -74,6 +74,7 @@ from tmux_kit.observe import (
     probe_tmux_epoch,
     snapshot_all,
 )
+from tmux_kit.scope import TmuxScope
 from tmux_kit.presence import (
     MANIFEST_SCHEMA_VERSION,
     compute_restore_plan,
