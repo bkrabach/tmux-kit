@@ -201,6 +201,8 @@ async def test_scope_wraps_subprocess_errors_with_context(error, monkeypatch):
         await TmuxScope("/tmp/pinned.sock", env={})._run("list-sessions", operation="test")
     assert str(caught.value)
     assert caught.value.__cause__ is error
+    if not str(error).strip():
+        assert "tmux produced no error output" in str(caught.value)
 
 
 async def test_scope_propagates_cancellation(monkeypatch):
