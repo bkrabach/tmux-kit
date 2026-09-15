@@ -39,13 +39,30 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y tmux
 
       - name: Confirm tmux is on PATH
-        run: tmux -V
+        run: tmux -L tmux-kit-ci-version -V
 
       - name: Install dependencies
         run: uv sync --extra dev
 
       - name: Run full suite (unit + integration + differential)
         run: uv run pytest -v
+
+      - name: Smoke-test the installed base wheel without dependencies
+        run: |
+          uv build
+          uv venv --clear .wheel-smoke
+          uv pip install --python .wheel-smoke/bin/python --no-deps dist/*.whl
+          cd /tmp
+          "$GITHUB_WORKSPACE/.wheel-smoke/bin/python" -I -c "
+          import tmux_kit.scope
+          from tmux_kit.scope import TmuxScope
+          scope = TmuxScope('/tmp/tmux-kit-wheel-smoke.sock', env={})
+          assert scope.socket_path == '/tmp/tmux-kit-wheel-smoke.sock'
+          module_path = tmux_kit.scope.__file__
+          assert module_path.startswith('$GITHUB_WORKSPACE/.wheel-smoke/')
+          assert module_path != '$GITHUB_WORKSPACE/tmux_kit/scope.py'
+          print(module_path)
+          "
 
   test-extras:
     # The optional `cli` (Click) and `mcp` (MCP SDK) surfaces are scoped
@@ -125,7 +142,7 @@ jobs:
         run: brew install tmux
 
       - name: Confirm tmux is on PATH
-        run: tmux -V
+        run: tmux -L tmux-kit-ci-version -V
 
       - name: Install dependencies
         run: uv sync --extra dev

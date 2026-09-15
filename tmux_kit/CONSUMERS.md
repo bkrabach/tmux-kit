@@ -50,7 +50,7 @@ to also want. See `AGENTS.md`'s "Scope" section for the litmus test and the
 worked example (`tmux_kit.labels`, added in 0.3.3, removed in 0.3.4 for
 exactly this reason).
 
-## The public surface (as shipped in 0.6.0) -- THE canonical enumeration
+## The public surface (0.6.0 plus unreleased work) -- THE canonical enumeration
 
 Stdlib-only (this table). Importing `tmux_kit` pulls in NO web server, no
 fastapi, no pam (enforced by a smoke test). This table is the ONE
@@ -73,6 +73,7 @@ at this one instead.
 | `tmux_kit.cgroup` | `should_escape()`, `wrap_exec_argv()`, `wrap_shell_argv()`, `environment_mode()`, `reset_probe_cache_for_tests()` — the systemd `--scope` escape that keeps sessions alive past the launching unit. |
 | `tmux_kit.api` | (0.2.0, new) the FACADE — `start`, `list_sessions`, `status`, `is_running`, `read`, `page`, `search`, `wait_for_attention`, `stop`, `kill`, `rename`, `doctor`, `configure`, `default_socket_dir`, and (0.3.2, new) `exit_code` — "did it succeed?" for a finished session, via tmux's `#{pane_dead_status}` (`status()` deliberately only answers running/finished/missing, not success/failure; requires `remain-on-exit on` on that session to still be readable by the time you ask, same caveat as `observe.pane_is_dead()`). Re-exported at the top level (`import tmux_kit; tmux_kit.start(...)`). See README's Quickstart and this module's own docstring. |
 | `tmux_kit.isolation` | (0.2.1, new; re-exported at the top level since 0.3.2 -- `import tmux_kit; tmux_kit.isolated_tmux_server`) `isolated_tmux_server()` — an async context manager yielding an `IsolatedTmuxServer` (`.run(*args)`) bound to a unique, throwaway `-L` socket with `$TMUX` scrubbed and its own private `TMUX_TMPDIR`, torn down (kill-server + directory removal) even if the block raises. THE tool to reach for whenever a test, example, script, or agent needs to poke real tmux behavior without any chance of touching an ambient/production server — see its module docstring for the incident that motivated it and the exact `$TMUX`-vs-`-L`/`-S` precedence mechanism. |
+| `tmux_kit.scope` | **Unreleased — not in PyPI `tmux-kit==0.6.0`.** `TmuxScope(socket_path, *, env=None)` observes one caller-supplied absolute socket path without owning it. `enumerate_sessions()` returns names plus activity/creation/cwd metadata; `capture_pane()`, `capture_pane_metadata()`, and `capture_pane_window()` observe the named session's active pane. Every call pins `-S <socket>` and a construction-time environment snapshot, never reads/writes `observe` caches or consults the process-global env factory, and raises on unavailable/malformed observations rather than returning empty success. It is deliberately not re-exported from `tmux_kit`. |
 
 **Optional extras (each its own `pyproject.toml` extra, NOT part of the
 stdlib-only base package):**
@@ -101,6 +102,10 @@ real consumer shapes them. If you need one, that's the signal to move it — say
   the class of caller a real incident (see AGENTS.md) proved dangerous. This is
   a fence for ONE surface, not the general policy object above, which remains
   open for the second real consumer to shape.
+- **Generic submission verdicts or automatic uncertain-input resend.** A scope
+  reports pane facts only. Whether observed output means accepted, executed, or
+  needs a retry varies by the application and must remain consumer-defined;
+  never resend automatically when delivery or acceptance is uncertain.
 - **ttyd / embedded-terminal lifecycle.** muxplex still owns it; the seam is
   defined (`§16` of the extraction plan) but not cut. It is gated on YOUR embedded
   human-UX design — how you want people to reach a session is the forcing function.
