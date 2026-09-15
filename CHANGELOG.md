@@ -3,6 +3,29 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.7.0
+
+### Added
+
+- **`tmux_kit.scope.TmuxScope`** observes one explicitly selected tmux server
+  without owning its lifecycle. It provides session enumeration, active-pane
+  capture, pane metadata, and capture windows using an explicit socket path
+  and a private construction-time child-environment snapshot.
+- **Exact session targeting** uses the `=<session>:` window-target form before
+  pinning the active pane's `%pane_id`, avoiding tmux's prefix fallback.
+  Unavailable sockets, missing exact sessions, malformed active-pane records,
+  and malformed pane metadata raise contextual errors.
+
+### Compatibility
+
+- Existing facade APIs, process-global environment factories, and observation
+  caches remain unchanged. Session enumeration retains the shared parser's
+  established per-field metadata tolerance.
+- The base package remains stdlib-only. Import the new class explicitly from
+  `tmux_kit.scope`; no facade, CLI, or MCP verb is added.
+- Application acceptance, execution, and uncertain-input retry decisions remain
+  consumer-owned; the scope reports observations rather than submission verdicts.
+
 ## 0.6.0
 
 ### Added
