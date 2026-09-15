@@ -147,7 +147,7 @@ async def test_scope_capture_uses_exact_session_then_immutable_active_pane(monke
     )
 
     resolution_calls = [call for call in calls if call[2] == "list-panes"]
-    assert all(call[3:6] == ("-t", "=exact", "-F") for call in resolution_calls)
+    assert all(call[3:6] == ("-t", "=exact:", "-F") for call in resolution_calls)
     captures = [call for call in calls if call[2] == "capture-pane"]
     assert captures[0][3:] == ("-e", "-p", "-t", "%41", "-S", "-12")
     assert captures[1][3:] == ("-p", "-t", "%41", "-S", "-12")
@@ -328,12 +328,21 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
             assert proc.get_env_factory() is installed_factory
 
             for call in (
+                scope_a.capture_pane("same"),
+                scope_a.capture_pane_metadata("same"),
+                scope_a.capture_pane_window("same", -3, None),
                 scope_a.capture_pane("missing"),
                 scope_a.capture_pane_metadata("missing"),
                 scope_a.capture_pane_window("missing", -3, None),
             ):
-                with pytest.raises(RuntimeError):
+                with pytest.raises(RuntimeError, match="socket.*session"):
                     await call
+            assert observe._session_list is sentinel_caches[0]
+            assert observe._snapshots is sentinel_caches[1]
+            assert observe._activity is sentinel_caches[2]
+            assert observe._created is sentinel_caches[3]
+            assert observe._cwds is sentinel_caches[4]
+            assert proc.get_env_factory() is installed_factory
 
         assert stale_scope is not None and stale_socket is not None
         assert not stale_socket.exists()
@@ -346,6 +355,12 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
             with pytest.raises(RuntimeError):
                 await call
         assert not stale_socket.exists()
+        assert observe._session_list is sentinel_caches[0]
+        assert observe._snapshots is sentinel_caches[1]
+        assert observe._activity is sentinel_caches[2]
+        assert observe._created is sentinel_caches[3]
+        assert observe._cwds is sentinel_caches[4]
+        assert proc.get_env_factory() is installed_factory
     finally:
         proc.set_env_factory(previous_factory)
         (

@@ -156,7 +156,7 @@ class TmuxScope:
         output = await self._run(
             "list-panes",
             "-t",
-            f"={session_name}",
+            f"={session_name}:",
             "-F",
             "#{pane_id}\t#{pane_active}",
             operation="active-pane resolution",

@@ -73,6 +73,9 @@ or malformed metadata raises contextually -- it must never turn into an empty
 server/pane result. Keep application acceptance, execution, and uncertain
 input-resend decisions outside this library.
 
+`list-panes` targets a window: use `=<session>:` for strict session matching;
+the real-tmux regression proves `=<session>` can resolve a longer session name.
+
 ## The two safety rails (`tests/test_rails.py`) — do not weaken either
 
 Both map to real production incidents (see muxplex's own `AGENTS.md` for the
