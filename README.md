@@ -237,7 +237,7 @@ ambient default. Point at a shared server only via an explicit
 `configure(socket_dir=...)`, made with all four hazards in mind;
 `tmux_kit/CONSUMERS.md` documents each in full.
 
-### Observe another server without owning it (unreleased)
+### Observe another server without owning it (0.7.0)
 
 When an application needs a read-only snapshot of a known server, bind it to
 the actual absolute socket pathname. `TmuxScope` never discovers, starts,
@@ -252,7 +252,7 @@ names, activity, created, cwds = await scope.enumerate_sessions()
 text = await scope.capture_pane("build")
 ```
 
-This is unreleased work, not part of PyPI `tmux-kit==0.6.0`. A scope only
+Available in `tmux-kit>=0.7.0`. A scope only
 reports tmux facts; deciding whether output means acceptance, execution, or
 whether uncertain input should be resent remains consumer policy.
 

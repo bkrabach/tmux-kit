@@ -63,7 +63,7 @@ the library as a shortcut.
 
 ## Scoped observation is non-owning and never falls back
 
-`tmux_kit.scope.TmuxScope` is the narrow, unreleased observation seam for a
+`tmux_kit.scope.TmuxScope` is the narrow observation seam added in 0.7.0 for a
 consumer that supplies a socket pathname. User-home notation is expanded once
 in the caller's environment, then the path must be absolute; `env` controls
 only the child subprocess environment. It never discovers, starts, changes,
