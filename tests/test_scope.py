@@ -270,7 +270,7 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
                 "9",
                 "-c",
                 "/tmp",
-                "printf 'scope-a-marker\\n'; exec sleep 120",
+                "printf 'scope-a-short-marker\\n'; exec sleep 120",
             )
             await server_b.run(
                 "new-session",
@@ -286,11 +286,67 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
                 "printf 'scope-b-marker\\n'; exec sleep 120",
             )
 
+            for _ in range(20):
+                short_output, b_output = await asyncio.gather(
+                    server_a.run("capture-pane", "-p", "-t", "=same-name:"),
+                    server_b.run("capture-pane", "-p", "-t", "=same-name:"),
+                )
+                if (
+                    "scope-a-short-marker" in short_output
+                    and "scope-b-marker" in b_output
+                ):
+                    break
+                await asyncio.sleep(0.05)
+            assert "scope-a-short-marker" in short_output
+            assert "scope-b-marker" in b_output
+
             scope_a, scope_b = TmuxScope(socket_a), TmuxScope(socket_b)
             stale_scope, stale_socket = scope_a, socket_a
             monkeypatch.setenv("TMUX", "/wrong/socket,1,0")
             installed_factory = lambda: {"PATH": "/does-not-exist"}
             proc.set_env_factory(installed_factory)
+
+            # Before the longer session exists, the old "=same" target resolves
+            # the shorter prefix; once it exists, tmux rejects that target as
+            # ambiguous and would hide this regression.
+            for call in (
+                scope_a.capture_pane("same"),
+                scope_a.capture_pane_metadata("same"),
+                scope_a.capture_pane_window("same", -3, None),
+                scope_a.capture_pane("missing"),
+                scope_a.capture_pane_metadata("missing"),
+                scope_a.capture_pane_window("missing", -3, None),
+            ):
+                with pytest.raises(RuntimeError, match="socket.*session"):
+                    await call
+            assert observe._session_list is sentinel_caches[0]
+            assert observe._snapshots is sentinel_caches[1]
+            assert observe._activity is sentinel_caches[2]
+            assert observe._created is sentinel_caches[3]
+            assert observe._cwds is sentinel_caches[4]
+            assert proc.get_env_factory() is installed_factory
+
+            await server_a.run(
+                "new-session",
+                "-d",
+                "-s",
+                "same-name-extra",
+                "-x",
+                "80",
+                "-y",
+                "9",
+                "-c",
+                "/tmp",
+                "printf 'scope-a-prefix-marker\\n'; exec sleep 120",
+            )
+            for _ in range(20):
+                prefix_output = await server_a.run(
+                    "capture-pane", "-p", "-t", "=same-name-extra:"
+                )
+                if "scope-a-prefix-marker" in prefix_output:
+                    break
+                await asyncio.sleep(0.05)
+            assert "scope-a-prefix-marker" in prefix_output
 
             (
                 a_listing,
@@ -311,32 +367,21 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
                 scope_a.capture_pane_window("same-name", -3, None),
                 scope_b.capture_pane_window("same-name", -3, None),
             )
-            assert a_listing[0] == ["same-name"] == b_listing[0]
-            assert a_listing[3] == {"same-name": "/tmp"}
+            assert a_listing[0] == ["same-name", "same-name-extra"]
+            assert b_listing[0] == ["same-name"]
+            assert a_listing[3] == {"same-name": "/tmp", "same-name-extra": "/tmp"}
             assert b_listing[3] == {"same-name": "/"}
-            assert "scope-a-marker" in a_capture and "scope-b-marker" not in a_capture
-            assert "scope-b-marker" in b_capture and "scope-a-marker" not in b_capture
+            assert "scope-a-short-marker" in a_capture
+            assert "scope-a-prefix-marker" not in a_capture
+            assert "scope-b-marker" not in a_capture
+            assert "scope-b-marker" in b_capture
+            assert "scope-a-short-marker" not in b_capture
+            assert "scope-a-prefix-marker" not in b_capture
             assert a_metadata[1] == 9
             assert b_metadata[1] == 17
-            assert "scope-a-marker" in a_window[3]
+            assert "scope-a-short-marker" in a_window[3]
+            assert "scope-a-prefix-marker" not in a_window[3]
             assert "scope-b-marker" in b_window[3]
-            assert observe._session_list is sentinel_caches[0]
-            assert observe._snapshots is sentinel_caches[1]
-            assert observe._activity is sentinel_caches[2]
-            assert observe._created is sentinel_caches[3]
-            assert observe._cwds is sentinel_caches[4]
-            assert proc.get_env_factory() is installed_factory
-
-            for call in (
-                scope_a.capture_pane("same"),
-                scope_a.capture_pane_metadata("same"),
-                scope_a.capture_pane_window("same", -3, None),
-                scope_a.capture_pane("missing"),
-                scope_a.capture_pane_metadata("missing"),
-                scope_a.capture_pane_window("missing", -3, None),
-            ):
-                with pytest.raises(RuntimeError, match="socket.*session"):
-                    await call
             assert observe._session_list is sentinel_caches[0]
             assert observe._snapshots is sentinel_caches[1]
             assert observe._activity is sentinel_caches[2]
