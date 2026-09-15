@@ -255,6 +255,8 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
 
     stale_scope: TmuxScope | None = None
     stale_socket: Path | None = None
+    # pane_current_path reports the canonical cwd (/private/tmp on macOS).
+    cwd_a = str(Path("/tmp").resolve())
     try:
         async with isolated_tmux_server(prefix="scope-a") as server_a, isolated_tmux_server(
             prefix="scope-b"
@@ -271,7 +273,7 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
                 "-y",
                 "9",
                 "-c",
-                "/tmp",
+                cwd_a,
                 "printf 'scope-a-short-marker\\n'; exec sleep 120",
             )
             await server_b.run(
@@ -338,7 +340,7 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
                 "-y",
                 "9",
                 "-c",
-                "/tmp",
+                cwd_a,
                 "printf 'scope-a-prefix-marker\\n'; exec sleep 120",
             )
             for _ in range(20):
@@ -371,7 +373,7 @@ async def test_scopes_remain_independent_non_owning_and_strict_after_teardown(
             )
             assert a_listing[0] == ["same-name", "same-name-extra"]
             assert b_listing[0] == ["same-name"]
-            assert a_listing[3] == {"same-name": "/tmp", "same-name-extra": "/tmp"}
+            assert a_listing[3] == {"same-name": cwd_a, "same-name-extra": cwd_a}
             assert b_listing[3] == {"same-name": "/"}
             assert "scope-a-short-marker" in a_capture
             assert "scope-a-prefix-marker" not in a_capture
