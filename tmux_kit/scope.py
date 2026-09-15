@@ -18,9 +18,14 @@ from tmux_kit import observe, proc
 class TmuxScope:
     """Observe the active pane of sessions on one explicit socket path.
 
-    This class owns neither the tmux server nor its socket.  Every failed
-    observation raises instead of becoming an empty result, so a caller never
-    mistakes an unavailable server for a blank pane or empty server.
+    This class owns neither the tmux server nor its socket. Subprocess and
+    target-resolution failures raise instead of becoming empty results.
+    Malformed active-pane records and pane metadata also raise; session
+    enumeration retains the shared parser's per-field metadata tolerance.
+
+    User-home notation in the socket path is expanded once in the caller's
+    environment, after which the path must be absolute. ``env`` controls only
+    the child subprocess environment, not that path expansion.
     """
 
     def __init__(
