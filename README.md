@@ -237,6 +237,23 @@ ambient default. Point at a shared server only via an explicit
 `configure(socket_dir=...)`, made with all four hazards in mind;
 `tmux_kit/CONSUMERS.md` documents each in full.
 
+### Buffered paste to one known pane (0.8.0)
+
+`paste_text()` is a low-level transport primitive: supply the exact absolute
+socket pathname and immutable pane ID, then retain application confirmation and
+submission policy in your consumer.
+
+```python
+from tmux_kit.paste import paste_text
+
+await paste_text("%42", "first line\r\nfinal line\n", socket_path="/run/user/1000/tmux-1000/default")
+```
+
+It uses a UUID-named private buffer, never a human buffer, and sends no Enter.
+`-p` requests native bracketed framing only if the target application enabled
+bracketed paste; otherwise tmux performs raw native paste. It is not an
+application acceptance or atomic-submission claim.
+
 ### Observe another server without owning it (0.7.0)
 
 When an application needs a read-only snapshot of a known server, bind it to
@@ -276,11 +293,11 @@ consumer.
 changed. Pin exactly:
 
 ```toml
-dependencies = ["tmux-kit==0.6.0"]
+dependencies = ["tmux-kit==0.8.0"]
 
 # Pinned git install, for a managed environment that cannot reach public
 # PyPI (see CONSUMERS.md):
-#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit.git@v0.6.0
+#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit.git@v0.8.0
 ```
 
 ## Tests

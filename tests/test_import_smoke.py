@@ -88,6 +88,7 @@ from tmux_kit.bell import (
     wait_for_bell,
 )
 from tmux_kit.keys import ALLOWED_KEYS, MAX_KEYS, MAX_TEXT_BYTES
+from tmux_kit.paste import paste_text
 from tmux_kit.cgroup import should_escape, wrap_exec_argv, wrap_shell_argv
 from tmux_kit.api import (
     DoctorReport,
