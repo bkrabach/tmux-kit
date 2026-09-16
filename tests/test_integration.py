@@ -29,6 +29,8 @@ import pytest
 from tmux_kit.bell import poll_bell_flag
 from tmux_kit import api
 from tmux_kit.keys import build_send_text_with_enters_argv
+from tmux_kit.isolation import isolated_tmux_server
+from tmux_kit.paste import paste_text
 from tmux_kit.names import (
     SESSION_NAME_MAX_LEN,
     is_valid_session_name,
@@ -338,6 +340,87 @@ async def test_multiline_helper_delivers_enter_bytes_in_raw_mode_and_exits_copy_
             break
         await asyncio.sleep(0.05)
     assert marker in output
+
+
+async def _wait_for_capture(server, marker: str) -> str:
+    for _ in range(40):
+        output = await server.run("capture-pane", "-p", "-t", "paste-target")
+        if marker in output:
+            return output
+        await asyncio.sleep(0.05)
+    return output
+
+
+async def test_buffered_paste_brackets_enabled_raw_receiver_byte_for_byte():
+    """``-p`` frames exactly one payload when the target enables the mode."""
+    payload = "snowman ☃\r\ntrailing\n"
+    expected = b"\x1b[200~" + payload.encode("utf-8") + b"\x1b[201~"
+    script = (
+        "import os, select, tty\n"
+        "tty.setraw(0)\n"
+        "os.write(1, b'\\x1b[?2004hREADY\\n')\n"
+        f"expected = {expected!r}\n"
+        "data = bytearray()\n"
+        "while len(data) < len(expected):\n"
+        "    data.extend(os.read(0, len(expected) - len(data)))\n"
+        "ready, _, _ = select.select([0], [], [], 0.2)\n"
+        "extra = os.read(0, 1024) if ready else b''\n"
+        "os.write(1, f'FRAME_MATCH:{bytes(data) == expected} EXTRA:{extra.hex()}\\n'.encode())\n"
+    )
+    async with isolated_tmux_server(prefix="paste-framed") as server:
+        await server.run(
+            "new-session",
+            "-d",
+            "-s",
+            "paste-target",
+            f"python3 -u -c {shlex.quote(script)}",
+        )
+        await server.run("set-option", "-t", "paste-target", "remain-on-exit", "on")
+        socket_path = (await server.run("display-message", "-p", "#{socket_path}")).strip()
+        pane_id = (await server.run("list-panes", "-t", "paste-target", "-F", "#{pane_id}")).strip()
+        assert "READY" in await _wait_for_capture(server, "READY")
+
+        await paste_text(pane_id, payload, socket_path=socket_path)
+
+        marker = "FRAME_MATCH:True EXTRA:"
+        output = await _wait_for_capture(server, marker)
+        assert marker in output
+
+
+async def test_buffered_paste_is_raw_when_receiver_has_not_enabled_bracketed_mode():
+    """Without target opt-in, native tmux paste is raw; this is not atomic."""
+    payload = "plain ☃\r\ntrailing\n"
+    expected = payload.encode("utf-8")
+    script = (
+        "import os, select, tty\n"
+        "tty.setraw(0)\n"
+        "os.write(1, b'READY\\n')\n"
+        f"expected = {expected!r}\n"
+        "data = bytearray()\n"
+        "while len(data) < len(expected):\n"
+        "    data.extend(os.read(0, len(expected) - len(data)))\n"
+        "ready, _, _ = select.select([0], [], [], 0.2)\n"
+        "extra = os.read(0, 1024) if ready else b''\n"
+        "os.write(1, f'RAW_MATCH:{bytes(data) == expected} EXTRA:{extra.hex()}\\n'.encode())\n"
+    )
+    async with isolated_tmux_server(prefix="paste-raw") as server:
+        await server.run(
+            "new-session",
+            "-d",
+            "-s",
+            "paste-target",
+            f"python3 -u -c {shlex.quote(script)}",
+        )
+        await server.run("set-option", "-t", "paste-target", "remain-on-exit", "on")
+        socket_path = (await server.run("display-message", "-p", "#{socket_path}")).strip()
+        pane_id = (await server.run("list-panes", "-t", "paste-target", "-F", "#{pane_id}")).strip()
+        assert "READY" in await _wait_for_capture(server, "READY")
+
+        await paste_text(pane_id, payload, socket_path=socket_path)
+
+        marker = "RAW_MATCH:True EXTRA:"
+        output = await _wait_for_capture(server, marker)
+        assert marker in output
 
 
 async def test_timeout_cleans_its_child_without_killing_a_created_tmux_server(

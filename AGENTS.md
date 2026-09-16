@@ -80,6 +80,12 @@ outside this library.
 `list-panes` targets a window: use `=<session>:` for strict session matching;
 the real-tmux regression proves `=<session>` can resolve a longer session name.
 
+**Buffered paste is transport, not submission.** `paste_text()` must receive an
+absolute socket path and immutable `%<digits>` pane ID; it uses only a private
+UUID-named buffer and generates no Enter. `-p` requests bracketed framing only
+when the application enabled it, otherwise paste is raw. Consumers own support
+selection, readback, acceptance, retry, and submission policy.
+
 ## The two safety rails (`tests/test_rails.py`) — do not weaken either
 
 Both map to real production incidents (see muxplex's own `AGENTS.md` for the

@@ -3,6 +3,28 @@
 All notable changes to `tmux-kit` are documented here. 0.x semantics --
 no semver promise; see AGENTS.md's "Versioning is lockstep with muxplex".
 
+## 0.8.0
+
+### Added
+
+- **`tmux_kit.paste.paste_text(pane_id, text, *, socket_path)`** is a
+  socket-pinned native buffered-paste primitive. It validates an absolute socket
+  path, immutable `%<digits>` pane ID, UTF-8 byte cap, and terminal controls
+  before subprocess contact; loads bytes through stdin into a UUID-named private
+  buffer; then invokes `paste-buffer -p -r -d`. Failed or cancelled delivery
+  explicitly deletes the private buffer. It never touches human/unnamed buffers
+  and never generates Enter.
+
+### Compatibility
+
+- `-p` requests tmux's native bracketed-paste framing only when the target
+  application enabled it; otherwise delivery is raw native paste. This primitive
+  makes no application acceptance, retention, atomicity, submission, readback,
+  or retry claim; consumers own all of those decisions.
+- `proc.run_tmux()` accepts additive `input_bytes=` for stdin-backed commands.
+  Calls omitting it retain their existing subprocess behavior. The base package
+  remains stdlib-only; no facade, CLI, or MCP input surface was added.
+
 ## 0.7.0
 
 ### Added

@@ -160,7 +160,11 @@ def tmux_env(socket_dir: str | None) -> dict[str, str] | None:
     return env
 
 
-async def run_tmux(*args: str, env: dict[str, str] | None | object = _UNSET) -> str:
+async def run_tmux(
+    *args: str,
+    env: dict[str, str] | None | object = _UNSET,
+    input_bytes: bytes | None = None,
+) -> str:
     """Run `tmux <args>` in a subprocess and return stdout as a string.
 
     The subprocess environment is INJECTED config (plan §4.3): pass it
@@ -170,20 +174,32 @@ async def run_tmux(*args: str, env: dict[str, str] | None | object = _UNSET) -> 
     made from inside the library. ``env=None`` explicitly inherits this
     process's environment.
 
+    Pass ``input_bytes`` to feed exact bytes to stdin (used by buffered tmux
+    commands such as ``load-buffer -``).  When omitted, stdin and
+    ``communicate()`` retain their existing inherited/no-input behavior.
+
     Raises:
         RuntimeError: If the process exits with a nonzero return code.
                       The error message contains the decoded stderr output.
     """
     if env is _UNSET:
         env = default_env()
+    subprocess_kwargs: dict[str, object] = {
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "env": env,
+    }
+    if input_bytes is not None:
+        subprocess_kwargs["stdin"] = asyncio.subprocess.PIPE
     proc = await asyncio.create_subprocess_exec(
         "tmux",
         *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,  # type: ignore[arg-type]
+        **subprocess_kwargs,  # type: ignore[arg-type]
     )
-    stdout_bytes, stderr_bytes = await proc.communicate()
+    if input_bytes is None:
+        stdout_bytes, stderr_bytes = await proc.communicate()
+    else:
+        stdout_bytes, stderr_bytes = await proc.communicate(input_bytes)
     if proc.returncode != 0:
         raise RuntimeError(stderr_bytes.decode("utf-8", errors="replace"))
     return stdout_bytes.decode("utf-8", errors="replace")
