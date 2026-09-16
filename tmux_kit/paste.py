@@ -11,6 +11,7 @@ its normal raw native paste.  No Enter event is generated.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import uuid
@@ -55,31 +56,61 @@ def _private_env() -> dict[str, str]:
     return env
 
 
+async def _finish_tmux(
+    *args: str, env: dict[str, str], input_bytes: bytes | None = None
+) -> str:
+    """Settle the submitted subprocess before propagating cancellation.
+
+    A cancelled load must not finish later and recreate a buffer after cleanup.
+    Shield the whole subprocess operation, including its creation and reaping.
+    """
+    operation = asyncio.create_task(
+        proc.run_tmux(*args, env=env, input_bytes=input_bytes)
+    )
+    cancelled: asyncio.CancelledError | None = None
+    while not operation.done():
+        try:
+            await asyncio.shield(operation)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except Exception:
+            break  # operation.result() below reports the original failure
+    if cancelled is not None:
+        if not operation.cancelled():
+            failure = operation.exception()
+            if failure is not None:
+                cancelled.add_note(f"The tmux operation also failed: {failure}")
+        raise cancelled
+    return operation.result()
+
+
 async def paste_text(pane_id: str, text: str, *, socket_path: str) -> None:
     """Paste *text* into one pane via a private, UUID-named tmux buffer.
 
     The supplied socket path and ``%<digits>`` pane ID are validated before any
     subprocess call.  The payload is loaded byte-for-byte from stdin, then
     ``paste-buffer -p -r -d`` delivers and deletes its private buffer.  If
-    delivery fails or the task is cancelled, the named buffer is explicitly
-    deleted before the original failure is re-raised.
+    loading or delivery fails, cleanup is attempted for only the named buffer.
+    Cancellation waits for the submitted tmux operation to finish before
+    cleanup, then propagates. If the server prevents cleanup, that failure is
+    reported too; cancellation keeps its original exception with a note.
     """
     payload = _validate_paste(pane_id, text, socket_path)
     buffer_name = f"tmux-kit-paste-{uuid.uuid4().hex}"
     env = _private_env()
 
-    await proc.run_tmux(
-        "-S",
-        socket_path,
-        "load-buffer",
-        "-b",
-        buffer_name,
-        "-",
-        env=dict(env),
-        input_bytes=payload,
-    )
     try:
-        await proc.run_tmux(
+        await _finish_tmux(
+            "-S",
+            socket_path,
+            "load-buffer",
+            "-b",
+            buffer_name,
+            "-",
+            env=dict(env),
+            input_bytes=payload,
+        )
+        await _finish_tmux(
             "-S",
             socket_path,
             "paste-buffer",
@@ -94,7 +125,7 @@ async def paste_text(pane_id: str, text: str, *, socket_path: str) -> None:
         )
     except BaseException as paste_error:
         try:
-            await proc.run_tmux(
+            await _finish_tmux(
                 "-S",
                 socket_path,
                 "delete-buffer",
@@ -103,8 +134,18 @@ async def paste_text(pane_id: str, text: str, *, socket_path: str) -> None:
                 env=dict(env),
             )
         except Exception as cleanup_error:
-            raise RuntimeError(
-                f"paste-buffer failed: {paste_error}; private buffer cleanup failed: "
-                f"{cleanup_error}"
-            ) from paste_error
+            # -d may already have removed this exact buffer before cancellation.
+            if str(cleanup_error).strip() != f"unknown buffer: {buffer_name}":
+                message = (
+                    f"paste-buffer failed: {paste_error}; private buffer cleanup failed: "
+                    f"{cleanup_error}"
+                )
+                if isinstance(paste_error, asyncio.CancelledError):
+                    paste_error.add_note(message)
+                else:
+                    raise RuntimeError(message) from paste_error
+        except asyncio.CancelledError:
+            # _finish_tmux has settled cleanup even on another cancellation.
+            if not isinstance(paste_error, asyncio.CancelledError):
+                raise
         raise

@@ -125,6 +125,93 @@ async def test_paste_deletes_private_buffer_when_cancelled(monkeypatch):
     assert run_tmux.await_args_list[2].args[2] == "delete-buffer"
 
 
+async def test_cancelled_load_cleans_accepted_buffer(monkeypatch):
+    buffers = set()
+    calls = []
+
+    async def fake_run(*args, **kwargs):
+        calls.append(args[2])
+        name = args[args.index("-b") + 1]
+        if args[2] == "load-buffer":
+            buffers.add(name)
+            raise asyncio.CancelledError()
+        if args[2] == "delete-buffer":
+            buffers.remove(name)
+        return ""
+
+    monkeypatch.setattr(paste.proc, "run_tmux", fake_run)
+    with pytest.raises(asyncio.CancelledError):
+        await paste.paste_text("%42", "private\ntext", socket_path="/tmp/kit.sock")
+    assert not buffers
+    assert calls == ["load-buffer", "delete-buffer"]
+
+
+async def test_cancelled_successful_paste_keeps_cancellation(monkeypatch):
+    async def fake_run(*args, **kwargs):
+        if args[2] == "paste-buffer":
+            # The remote -d succeeded before cancellation reached its caller.
+            raise asyncio.CancelledError()
+        if args[2] == "delete-buffer":
+            raise RuntimeError(f"unknown buffer: {args[4]}\n")
+        return ""
+
+    monkeypatch.setattr(paste.proc, "run_tmux", fake_run)
+    with pytest.raises(asyncio.CancelledError):
+        await paste.paste_text("%42", "text", socket_path="/tmp/kit.sock")
+
+
+@pytest.mark.integration
+async def test_cancel_during_load_waits_then_cleans_real_buffer(monkeypatch):
+    from tmux_kit import isolated_tmux_server
+
+    original_run = proc.run_tmux
+    loaded = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    calls = []
+
+    async def delayed_load(*args, **kwargs):
+        calls.append(args[2])
+        result = await original_run(*args, **kwargs)
+        if args[2] == "load-buffer":
+            loaded.set()
+            await release.wait()
+            finished.set()
+        return result
+
+    async with isolated_tmux_server(prefix="paste-cancel") as server:
+        await server.run("new-session", "-d", "-s", "receiver")
+        pane_id = (await server.run(
+            "display-message", "-p", "-t", "=receiver:", "#{pane_id}"
+        )).strip()
+        socket_path = (await server.run(
+            "display-message", "-p", "#{socket_path}"
+        )).strip()
+        await server.run("set-buffer", "-b", "keep-me", "unrelated text")
+        monkeypatch.setattr(paste.proc, "run_tmux", delayed_load)
+        task = asyncio.create_task(
+            paste.paste_text(pane_id, "private\ntext", socket_path=socket_path)
+        )
+        try:
+            await asyncio.wait_for(loaded.wait(), timeout=5)
+            task.cancel()
+            await asyncio.sleep(0)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+            assert finished.is_set(), "cancelled load was not allowed to finish"
+            names = await original_run(
+                "-S", socket_path, "list-buffers", "-F", "#{buffer_name}"
+            )
+            assert names.splitlines() == ["keep-me"]
+            assert calls == ["load-buffer", "delete-buffer"]
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_paste_reports_both_delivery_and_cleanup_failures(monkeypatch):
     delivery_error = RuntimeError("target pane vanished")
     cleanup_error = RuntimeError("buffer unavailable")

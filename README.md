@@ -307,9 +307,8 @@ uv sync --extra dev
 uv run pytest
 ```
 
-That gives `210 passed, 2 skipped` on this tree — the two skips are the CLI
-and MCP test modules, which `importorskip` their extras. Install those to
-run all 234:
+The CLI and MCP test modules skip when their optional extras are absent.
+Install those extras to include their tests:
 
 ```bash
 uv sync --extra dev --extra cli --extra mcp
@@ -321,9 +320,9 @@ Several of those are incident tests, not tests written against a spec —
 `test_rails.py`, and `test_differential_harness.py` each carry assertions
 that exist because a specific thing happened in production. When one
 fails, the fix is essentially never to weaken the assertion. Beyond the
-unit suite there is a differential harness (`pytest -m differential`, 22
-tests, replaying fleet-recorded real-tmux data) and a real-tmux
-integration suite (`pytest -m integration`, 15 tests, against an isolated
+unit suite there is a differential harness (`pytest -m differential`,
+replaying fleet-recorded real-tmux data) and a real-tmux
+integration suite (`pytest -m integration`, against an isolated
 `-L` socket). CI (`.github/workflows/test.yml`) runs the full suite
 including both markers unconditionally — a CI runner has no live sessions
 to endanger — across Python 3.11/3.12/3.13 on Linux, plus an extras job
